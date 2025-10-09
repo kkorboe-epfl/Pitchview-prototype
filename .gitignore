@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+*.pyd
+*.pyo
+*.pdb
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Output folders / generated videos
+output/
+data/videos_split/cropped/
+data/videos_split/backup_m2ts/
+
+# Large video files
+data/cars/mp4/
+data/cars/backup_m2ts/
+
+# Others
+*.swp
