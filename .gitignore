@@ -30,6 +30,7 @@ data/videos_split/backup_m2ts/
 
 # Large video files
 data/cars/mp4/
+data/videos_split
 data/cars/backup_m2ts/
 
 # Others

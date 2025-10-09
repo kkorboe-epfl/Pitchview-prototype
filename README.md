@@ -10,8 +10,9 @@ The dataset used for testing comes from the [Stereo Egomotion Dataset](https://l
 
 1. [Prerequisites](#prerequisites)  
 2. [Project Structure](#project-structure)  
-3. [Environment Variables](#environment-variables)  
-4. [Usage](#usage) 
+3. [Test Script](#test-script) 
+4. [Environment Variables](#environment-variables)
+5. [Usage](#usage) 
 
 ---
 
@@ -35,6 +36,7 @@ pip install opencv-python numpy python-dotenv
     - cars/
       - backup_m2ts/        # *Original .m2ts files moved here after conversion*
       - mp4/                # *Converted .mp4 videos*
+    - test_videos              
     - videos_split/
       - cropped/            # *Cropped left/right videos for stitching*
   - output/
@@ -46,8 +48,14 @@ pip install opencv-python numpy python-dotenv
       - video_splitting_with_crop.py
     - stitching/
       - video_stitching.py
+    - test_stitching_pipeline.py
   - .env                   # *Configuration file*
   - README.md
+
+## Test Script
+
+A test script `test_stitching_pipeline.py` is provided in the scripts folder to quickly verify that the video processing pipeline is working. It uses a small sample video (`car001.mp4`) in `data/test_videos` and runs the full pipeline: splitting, cropping, and stitching.
+
 
 ## Environment Variables
 The pipeline uses a `.env` file to define input, output, and stitching parameters. This allows you to change videos, paths, or settings without modifying the Python scripts.
