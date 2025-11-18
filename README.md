@@ -18,7 +18,8 @@ python scripts/stitching/stitch_apply_transform.py \
   --left data/raw/20251116_103024_left.mp4 \
   --right data/raw/20251116_103024_right.mp4 \
   --calib data/calibration/rig_calibration.json \
-  --output output/stitched/panorama.mp4
+  --output output/stitched/panorama.mp4 \
+  --auto-crop
 
 # Generate broadcast view
 python scripts/detection/broadcast_yolo.py \
