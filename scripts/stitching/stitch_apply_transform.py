@@ -166,6 +166,12 @@ def writer_from_args(path: Optional[str],
                      fps: float) -> Optional[cv2.VideoWriter]:
     if not path:
         return None
+    
+    # Create output directory if it doesn't exist
+    from pathlib import Path
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     vw = cv2.VideoWriter(path, fourcc, fps, size)
     if not vw.isOpened():

@@ -505,11 +505,15 @@ def main():
 
         # --- Initialise writers if needed ---
         if args.save_preview and preview_writer is None:
+            from pathlib import Path
+            Path(args.save_preview).parent.mkdir(parents=True, exist_ok=True)
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             ph, pw = preview.shape[:2]
             preview_writer = cv2.VideoWriter(args.save_preview, fourcc, 30, (pw, ph))
 
         if args.save_broadcast and broadcast_writer is None:
+            from pathlib import Path
+            Path(args.save_broadcast).parent.mkdir(parents=True, exist_ok=True)
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             bh, bw = broadcast_view.shape[:2]
             broadcast_writer = cv2.VideoWriter(args.save_broadcast, fourcc, 30, (bw, bh))
