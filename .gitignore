@@ -28,7 +28,10 @@ output/
 data/videos_split/cropped/
 data/videos_split/backup_m2ts/
 
-# Large video files
+# Large video files (download separately - see data/raw/README.md)
+data/raw/*.mp4
+data/raw/*.avi
+data/raw/*.mov
 data/cars/mp4/
 data/videos_split
 data/cars/backup_m2ts/
