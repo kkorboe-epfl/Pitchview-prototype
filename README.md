@@ -24,6 +24,9 @@ pip install -r requirements.txt
 # 2. Download sample videos
 cd data && ./download_videos.sh && cd ..
 
+# or for windows powershell:
+# cd data & "C:\Program Files\Git\bin\bash.exe" download_videos.sh & cd ..
+
 # 3. Stitch dual-camera videos into panorama
 python3 scripts/stitching/stitch_apply_transform.py \
   --left data/raw/20251116_103024_left.mp4 \
@@ -36,9 +39,33 @@ python3 scripts/stitching/stitch_apply_transform.py \
 python3 scripts/detection/broadcast_yolo.py \
   --video output/stitched/panorama.mp4 \
   --save-broadcast output/broadcast/game.mp4
+
 ```
 
-## Project Structure
+# or for windows powershell:
+```bash
+# Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+#  .\.venv\Scripts\Activate.ps1
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. Download sample videos
+cd data
+& "C:\Program Files\Git\bin\bash.exe" "./download_videos.sh"
+cd ..
+
+# 3. Stitch dual-camera videos into panorama
+python scripts/stitching/stitch_apply_transform.py `
+  --left data/raw/20251116_103024_left.mp4 `
+  --right data/raw/20251116_103024_right.mp4 `
+  --calib data/calibration/rig_calibration.json `
+  --output output/stitched/panorama.mp4 `
+  --auto-crop
+
+# 4. Generate broadcast view with tracking
+python scripts/detection/broadcast_yolo.py `
+  --video output/stitched/panorama.mp4 `
+  --save-broadcast output/broadcast/game.mp4
 
 ```
 pitchview-prototype/
