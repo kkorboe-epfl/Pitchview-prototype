@@ -38,6 +38,8 @@ PREVIEW_WIDTH = 1600
 EXCLUSION_RATIO = 0.13
 MAX_MISSED_FRAMES = 10
 
+BOTTOM_EXCLUSION_RATIO = 0.10   # exclude bottom 10 percent
+
 PLAYER_MIN_AREA = 100      
 PLAYER_MAX_AREA = 50000    
 PLAYER_MIN_ASPECT = 0.5    
@@ -85,10 +87,10 @@ player_model.to(device)
 
 
 # ---------------- BALL DETECTION ---------------- #
-
 def detect_red_candidates(frame, exclusion_ratio=EXCLUSION_RATIO):
     h, w = frame.shape[:2]
     exclusion_height = int(h * exclusion_ratio)
+    bottom_excl_height = int(h * BOTTOM_EXCLUSION_RATIO)
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -101,7 +103,10 @@ def detect_red_candidates(frame, exclusion_ratio=EXCLUSION_RATIO):
     mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
     mask = cv2.bitwise_or(mask1, mask2)
 
+    # Exclude top
     mask[0:exclusion_height, :] = 0
+    # Exclude bottom
+    mask[h - bottom_excl_height:h, :] = 0
 
     mask = cv2.GaussianBlur(mask, (5, 5), 0)
     kernel = np.ones((3, 3), np.uint8)
