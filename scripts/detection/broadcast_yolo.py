@@ -35,10 +35,12 @@ else:
 
 print(f"Using video: {VIDEO_PATH}")
 PREVIEW_WIDTH = 1600
-EXCLUSION_RATIO = 0.13
-MAX_MISSED_FRAMES = 10
+EXCLUSION_RATIO = 0.13    # top 13%
+BOTTOM_EXCLUSION_RATIO = 0.10   # bottom 10%
+LEFT_EXCLUSION_RATIO = 0.00     # left band (0 = off)
+RIGHT_EXCLUSION_RATIO = 0.00    # right band (0 = off)
 
-BOTTOM_EXCLUSION_RATIO = 0.10   # exclude bottom 10 percent
+MAX_MISSED_FRAMES = 10
 
 PLAYER_MIN_AREA = 100      
 PLAYER_MAX_AREA = 50000    
@@ -87,10 +89,21 @@ player_model.to(device)
 
 
 # ---------------- BALL DETECTION ---------------- #
-def detect_red_candidates(frame, exclusion_ratio=EXCLUSION_RATIO):
+def detect_red_candidates(
+    frame,
+    top_exclusion_ratio=EXCLUSION_RATIO,
+    bottom_exclusion_ratio=BOTTOM_EXCLUSION_RATIO,
+    left_exclusion_ratio=LEFT_EXCLUSION_RATIO,
+    right_exclusion_ratio=RIGHT_EXCLUSION_RATIO,
+    draw_exclusions=False,
+    debug_frame=None,
+):
     h, w = frame.shape[:2]
-    exclusion_height = int(h * exclusion_ratio)
-    bottom_excl_height = int(h * BOTTOM_EXCLUSION_RATIO)
+
+    top_excl = int(h * top_exclusion_ratio)
+    bottom_excl = int(h * bottom_exclusion_ratio)
+    left_excl = int(w * left_exclusion_ratio)
+    right_excl = int(w * right_exclusion_ratio)
 
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -103,11 +116,59 @@ def detect_red_candidates(frame, exclusion_ratio=EXCLUSION_RATIO):
     mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
     mask = cv2.bitwise_or(mask1, mask2)
 
-    # Exclude top
-    mask[0:exclusion_height, :] = 0
-    # Exclude bottom
-    mask[h - bottom_excl_height:h, :] = 0
+    # ---- apply exclusion zones on the mask ----
+    if top_excl > 0:
+        mask[0:top_excl, :] = 0
 
+    if bottom_excl > 0:
+        mask[h - bottom_excl:h, :] = 0
+
+    if left_excl > 0:
+        mask[:, 0:left_excl] = 0
+
+    if right_excl > 0:
+        mask[:, w - right_excl:w] = 0
+
+    # ---- optional visualisation of exclusion zones ----
+    if draw_exclusions and debug_frame is not None:
+        # top band
+        if top_excl > 0:
+            cv2.rectangle(
+                debug_frame,
+                (0, 0),
+                (w - 1, top_excl - 1),
+                (255, 0, 255),
+                2,
+            )
+        # bottom band
+        if bottom_excl > 0:
+            cv2.rectangle(
+                debug_frame,
+                (0, h - bottom_excl),
+                (w - 1, h - 1),
+                (255, 0, 255),
+                2,
+            )
+        # left band
+        if left_excl > 0:
+            cv2.rectangle(
+                debug_frame,
+                (0, 0),
+                (left_excl - 1, h - 1),
+                (255, 0, 255),
+                2,
+            )
+        # right band
+        if right_excl > 0:
+            cv2.rectangle(
+                debug_frame,
+                (w - right_excl, 0),
+                (w - 1, h - 1),
+                (255, 0, 255),
+                2,
+            )
+
+    # ---- rest of your pipeline ----
     mask = cv2.GaussianBlur(mask, (5, 5), 0)
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -136,7 +197,6 @@ def detect_red_candidates(frame, exclusion_ratio=EXCLUSION_RATIO):
         candidates.append((int(x), int(y), int(r), circ, area))
 
     return candidates
-
 
 def pick_best_candidate(cands, last_pos=None):
     if not cands:
@@ -360,8 +420,15 @@ def main():
 
         h, w = frame.shape[:2]
 
+        # prepare display frame early so we can draw debug overlays on it
+        disp = frame.copy()
+
         # --- Ball detection ---
-        cand = detect_red_candidates(frame)
+        cand = detect_red_candidates(
+            frame,
+            draw_exclusions=True,      # set to False to hide boxes
+            debug_frame=disp,
+        )
         ball = pick_best_candidate(cand, last_pos)
 
         if ball:
@@ -490,7 +557,6 @@ def main():
         broadcast_view = cv2.resize(broadcast_crop, (1280, 720))
 
         # --- Preview frame ---
-        disp = frame.copy()
 
         if ball:
             cv2.circle(disp, (bx, by), br, (0, 255, 255), 2)
