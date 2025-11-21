@@ -106,6 +106,7 @@ python3 scripts/stitching/stitch_apply_transform.py \
 **Options:**
 - `--auto-crop` - Automatically remove black borders
 - `--match-colors` - Apply exposure compensation to match camera colors/brightness
+- `--sync-offset N` - Sync videos by offsetting frames (positive if right is ahead, negative if left is ahead, default: 2)
 - `--edge-blend N` - Blend width in pixels (default: 50)
 - `--preview` - Show live preview window
 

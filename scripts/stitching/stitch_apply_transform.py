@@ -45,8 +45,13 @@ def open_source(src: str, width: Optional[int], height: Optional[int]) -> cv2.Vi
     return cam
 
 
-def read_synced(capL: cv2.VideoCapture, capR: cv2.VideoCapture):
-    """Read a frame from both sources; return False if either fails."""
+def read_synced(capL: cv2.VideoCapture, capR: cv2.VideoCapture, offset: int = 0):
+    """
+    Read a frame from both sources with optional frame offset for sync.
+    
+    offset: number of frames to offset right camera (positive = right is ahead, skip frames)
+            negative = left is ahead
+    """
     okL, fL = capL.read()
     okR, fR = capR.read()
     if not okL or not okR:
@@ -265,6 +270,8 @@ def main():
                     help="Ratio of non-black pixels needed to consider a row/column as content (default: 0.5)")
     ap.add_argument("--match-colors", action="store_true",
                     help="Apply exposure compensation to match camera colors and brightness")
+    ap.add_argument("--sync-offset", type=int, default=2,
+                    help="Frame offset for sync: positive if right camera is ahead, negative if left is ahead (default: 2)")
 
     args = ap.parse_args()
 
@@ -277,6 +284,16 @@ def main():
     # Open sources
     capL = open_source(args.left, args.width, args.height)
     capR = open_source(args.right, args.width, args.height)
+
+    # Apply sync offset by skipping frames
+    if args.sync_offset > 0:
+        print(f"[info] Skipping {args.sync_offset} frames from right camera for sync")
+        for _ in range(args.sync_offset):
+            capR.read()
+    elif args.sync_offset < 0:
+        print(f"[info] Skipping {-args.sync_offset} frames from left camera for sync")
+        for _ in range(-args.sync_offset):
+            capL.read()
 
     # Read first frames to sanity-check sizes
     ok, fL, fR = read_synced(capL, capR)
