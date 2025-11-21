@@ -24,9 +24,6 @@ pip install -r requirements.txt
 # 2. Download sample videos
 cd data && ./download_videos.sh && cd ..
 
-# or for windows powershell:
-# cd data & "C:\Program Files\Git\bin\bash.exe" download_videos.sh & cd ..
-
 # 3. Stitch dual-camera videos into panorama
 python3 scripts/stitching/stitch_apply_transform.py \
   --left data/raw/20251116_103024_left.mp4 \
