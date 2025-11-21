@@ -153,18 +153,15 @@ def stitch_pair(frameL: np.ndarray,
                 offset: Tuple[int, int],
                 pano_size: Tuple[int, int],
                 left_alpha: float = 1.0,
-                edge_blend_width: int = 50,
-                match_colors: bool = False) -> np.ndarray:
+                edge_blend_width: int = 50) -> np.ndarray:
     """
     Apply precomputed homography and offset to stitch a pair of frames
     into a panoramic canvas of size pano_size.
     
     edge_blend_width: number of pixels to feather at the RIGHT edge of the left frame only
-    match_colors: if True, apply exposure compensation to match camera colors/brightness
     """
-    # Apply exposure matching if requested
-    if match_colors:
-        frameL, frameR = match_exposure(frameL, frameR)
+    # Apply exposure matching (always enabled)
+    frameL, frameR = match_exposure(frameL, frameR)
     
     ox, oy = offset
     pano_w, pano_h = pano_size
@@ -262,16 +259,12 @@ def main():
                     help="Opacity of the left stream in [0..1] (e.g. 0.5)")
     ap.add_argument("--edge-blend", type=int, default=50,
                     help="Edge blend width in pixels for smoother seam at right edge (default: 50)")
-    ap.add_argument("--auto-crop", action="store_true",
-                    help="Automatically crop black borders from panorama")
     ap.add_argument("--crop-threshold", type=int, default=30,
                     help="Brightness threshold for detecting black borders (default: 30)")
     ap.add_argument("--crop-content-ratio", type=float, default=0.5,
                     help="Ratio of non-black pixels needed to consider a row/column as content (default: 0.5)")
-    ap.add_argument("--match-colors", action="store_true",
-                    help="Apply exposure compensation to match camera colors and brightness")
-    ap.add_argument("--sync-offset", type=int, default=2,
-                    help="Frame offset for sync: positive if right camera is ahead, negative if left is ahead (default: 2)")
+    ap.add_argument("--sync-offset", type=int, default=1,
+                    help="Frame offset for sync: positive if right camera is behind, negative if left is behind (default: 1)")
 
     args = ap.parse_args()
 
@@ -312,24 +305,22 @@ def main():
         scale = hL / float(hR)
         fR = cv2.resize(fR, (int(wR * scale), hL), interpolation=cv2.INTER_AREA)
 
-    # Detect crop region from first stitched frame if auto-crop enabled
+    # Detect crop region from first stitched frame (always enabled)
     crop_region = None
     output_size = pano_size
     
-    if args.auto_crop:
-        test_pano = stitch_pair(fL, fR, H, offset, pano_size, 
-                               left_alpha=args.left_alpha,
-                               edge_blend_width=args.edge_blend,
-                               match_colors=args.match_colors)
-        crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(
-            test_pano, 
-            threshold=args.crop_threshold,
-            content_threshold=args.crop_content_ratio
-        )
-        crop_region = (crop_x, crop_y, crop_w, crop_h)
-        output_size = (crop_w, crop_h)
-        print(f"[info] Auto-crop detected: x={crop_x}, y={crop_y}, w={crop_w}, h={crop_h}")
-        print(f"[info] Output size: {output_size}")
+    test_pano = stitch_pair(fL, fR, H, offset, pano_size, 
+                           left_alpha=args.left_alpha,
+                           edge_blend_width=args.edge_blend)
+    crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(
+        test_pano, 
+        threshold=args.crop_threshold,
+        content_threshold=args.crop_content_ratio
+    )
+    crop_region = (crop_x, crop_y, crop_w, crop_h)
+    output_size = (crop_w, crop_h)
+    print(f"[info] Auto-crop detected: x={crop_x}, y={crop_y}, w={crop_w}, h={crop_h}")
+    print(f"[info] Output size: {output_size}")
 
     # Prepare writer (after we know output size)
     vw = writer_from_args(args.output, output_size, args.fps) if args.output else None
@@ -358,13 +349,11 @@ def main():
 
         pano = stitch_pair(fL, fR, H, offset, pano_size, 
                           left_alpha=args.left_alpha,
-                          edge_blend_width=args.edge_blend,
-                          match_colors=args.match_colors)
+                          edge_blend_width=args.edge_blend)
 
-        # Apply crop if enabled
-        if crop_region is not None:
-            cx, cy, cw, ch = crop_region
-            pano = pano[cy:cy+ch, cx:cx+cw]
+        # Apply crop (always enabled)
+        cx, cy, cw, ch = crop_region
+        pano = pano[cy:cy+ch, cx:cx+cw]
 
         frames += 1
         if frames % 10 == 0:

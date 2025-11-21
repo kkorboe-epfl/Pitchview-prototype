@@ -35,8 +35,7 @@ python3 scripts/stitching/stitch_apply_transform.py \
   --left data/raw/20251116_103024_left.mp4 \
   --right data/raw/20251116_103024_right.mp4 \
   --calib data/calibration/rig_calibration.json \
-  --output output/stitched/panorama.mp4 \
-  --auto-crop
+  --output output/stitched/panorama.mp4
 
 # 5. Generate broadcast view with tracking
 python3 scripts/detection/broadcast_yolo.py \
@@ -66,8 +65,7 @@ python scripts/stitching/stitch_apply_transform.py `
   --left data/raw/20251116_103024_left.mp4 `
   --right data/raw/20251116_103024_right.mp4 `
   --calib data/calibration/rig_calibration.json `
-  --output output/stitched/panorama.mp4 `
-  --auto-crop
+  --output output/stitched/panorama.mp4
 
 # 5. Generate broadcast view with tracking
 python scripts/detection/broadcast_yolo.py `
@@ -98,16 +96,16 @@ python3 scripts/stitching/stitch_apply_transform.py \
   --left data/raw/20251116_103024_left.mp4 \
   --right data/raw/20251116_103024_right.mp4 \
   --calib data/calibration/rig_calibration.json \
-  --output output/stitched/panorama.mp4 \
-  --auto-crop
-  --match-colors
+  --output output/stitched/panorama.mp4
 ```
 
+**Note:** Auto-crop and color matching are always enabled for optimal output quality.
+
 **Options:**
-- `--auto-crop` - Automatically remove black borders
-- `--match-colors` - Apply exposure compensation to match camera colors/brightness
-- `--sync-offset N` - Sync videos by offsetting frames (positive if right is ahead, negative if left is ahead, default: 2)
+- `--sync-offset N` - Sync videos by offsetting frames (positive if right is behind, negative if left is behind, default: 4)
 - `--edge-blend N` - Blend width in pixels (default: 50)
+- `--crop-threshold N` - Brightness threshold for detecting black borders (default: 30)
+- `--crop-content-ratio N` - Ratio of non-black pixels needed for content detection (default: 0.5)
 - `--preview` - Show live preview window
 
 ### Step 2: Broadcast Generation
