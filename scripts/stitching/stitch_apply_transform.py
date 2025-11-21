@@ -101,19 +101,66 @@ def auto_crop_black_borders(image: np.ndarray, threshold: int = 30, content_thre
     return x, y, x_end - x, y_end - y
 
 
+def match_exposure(frameL: np.ndarray, frameR: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Match exposure and color balance between left and right frames.
+    Uses histogram matching to align brightness and color distributions.
+    """
+    # Convert to LAB color space for better color/brightness separation
+    lab_L = cv2.cvtColor(frameL, cv2.COLOR_BGR2LAB)
+    lab_R = cv2.cvtColor(frameR, cv2.COLOR_BGR2LAB)
+    
+    # Match each channel of right frame to left frame
+    matched_channels = []
+    for i in range(3):
+        # Compute histograms
+        hist_L = cv2.calcHist([lab_L], [i], None, [256], [0, 256])
+        hist_R = cv2.calcHist([lab_R], [i], None, [256], [0, 256])
+        
+        # Compute CDFs
+        cdf_L = hist_L.cumsum()
+        cdf_R = hist_R.cumsum()
+        
+        # Normalize CDFs
+        cdf_L = cdf_L / cdf_L[-1]
+        cdf_R = cdf_R / cdf_R[-1]
+        
+        # Create lookup table for histogram matching
+        lut = np.zeros(256, dtype=np.uint8)
+        for j in range(256):
+            # Find closest CDF value in L for each value in R
+            idx = np.searchsorted(cdf_L, cdf_R[j])
+            lut[j] = min(idx, 255)
+        
+        # Apply lookup table to right channel
+        matched_channels.append(cv2.LUT(lab_R[:, :, i], lut))
+    
+    # Merge matched channels
+    matched_lab_R = cv2.merge(matched_channels)
+    matched_R = cv2.cvtColor(matched_lab_R, cv2.COLOR_LAB2BGR)
+    
+    return frameL, matched_R
+
+
 def stitch_pair(frameL: np.ndarray,
                 frameR: np.ndarray,
                 H: np.ndarray,
                 offset: Tuple[int, int],
                 pano_size: Tuple[int, int],
                 left_alpha: float = 1.0,
-                edge_blend_width: int = 50) -> np.ndarray:
+                edge_blend_width: int = 50,
+                match_colors: bool = False) -> np.ndarray:
     """
     Apply precomputed homography and offset to stitch a pair of frames
     into a panoramic canvas of size pano_size.
     
     edge_blend_width: number of pixels to feather at the RIGHT edge of the left frame only
+    match_colors: if True, apply exposure compensation to match camera colors/brightness
     """
+    # Apply exposure matching if requested
+    if match_colors:
+        frameL, frameR = match_exposure(frameL, frameR)
+    
     ox, oy = offset
     pano_w, pano_h = pano_size
 
@@ -216,6 +263,8 @@ def main():
                     help="Brightness threshold for detecting black borders (default: 30)")
     ap.add_argument("--crop-content-ratio", type=float, default=0.5,
                     help="Ratio of non-black pixels needed to consider a row/column as content (default: 0.5)")
+    ap.add_argument("--match-colors", action="store_true",
+                    help="Apply exposure compensation to match camera colors and brightness")
 
     args = ap.parse_args()
 
@@ -253,7 +302,8 @@ def main():
     if args.auto_crop:
         test_pano = stitch_pair(fL, fR, H, offset, pano_size, 
                                left_alpha=args.left_alpha,
-                               edge_blend_width=args.edge_blend)
+                               edge_blend_width=args.edge_blend,
+                               match_colors=args.match_colors)
         crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(
             test_pano, 
             threshold=args.crop_threshold,
@@ -291,7 +341,8 @@ def main():
 
         pano = stitch_pair(fL, fR, H, offset, pano_size, 
                           left_alpha=args.left_alpha,
-                          edge_blend_width=args.edge_blend)
+                          edge_blend_width=args.edge_blend,
+                          match_colors=args.match_colors)
 
         # Apply crop if enabled
         if crop_region is not None:

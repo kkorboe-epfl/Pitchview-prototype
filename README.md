@@ -10,6 +10,7 @@ Affordable automated sports broadcast system using dual Pi HQ cameras. Stitches 
   - Black border artifact cleanup
   - Smooth edge blending at seam
   - Auto-crop for clean output
+  - Exposure compensation for color matching
 - Ball tracking with HSV color detection
 - Player detection with YOLOv8
 - Automated broadcast camera with velocity-based smoothing
@@ -99,10 +100,12 @@ python3 scripts/stitching/stitch_apply_transform.py \
   --calib data/calibration/rig_calibration.json \
   --output output/stitched/panorama.mp4 \
   --auto-crop
+  --match-colors
 ```
 
 **Options:**
 - `--auto-crop` - Automatically remove black borders
+- `--match-colors` - Apply exposure compensation to match camera colors/brightness
 - `--edge-blend N` - Blend width in pixels (default: 50)
 - `--preview` - Show live preview window
 
