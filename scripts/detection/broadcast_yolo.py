@@ -36,11 +36,11 @@ else:
 print(f"Using video: {VIDEO_PATH}")
 PREVIEW_WIDTH = 1600
 EXCLUSION_RATIO = 0.13    # top 13%
-BOTTOM_EXCLUSION_RATIO = 0.10   # bottom 10%
-LEFT_EXCLUSION_RATIO = 0.00     # left band (0 = off)
+BOTTOM_EXCLUSION_RATIO = 0.15   # bottom 15%
+LEFT_EXCLUSION_RATIO = 0.05     # left band (0 = off)
 RIGHT_EXCLUSION_RATIO = 0.00    # right band (0 = off)
 
-MAX_MISSED_FRAMES = 10
+MAX_MISSED_FRAMES = 20  # Increased to handle fast ball kicks better
 
 PLAYER_MIN_AREA = 100      
 PLAYER_MAX_AREA = 50000    
@@ -49,32 +49,35 @@ PLAYER_MAX_ASPECT = 5.0
 PLAYER_NEAR_DIST = 600
 
 BROADCAST_ASPECT = 16.0 / 9.0
-MIN_VIEW_WIDTH = 1000
-MAX_VIEW_WIDTH = 2600
-MARGIN_FACTOR = 0.55
-MARGIN_PIXELS = 80
+MIN_VIEW_WIDTH = 1400  # Increased for wider view
+MAX_VIEW_WIDTH = 3200  # Increased max width
+MARGIN_FACTOR = 0.75  # Increased margins to show more context
+MARGIN_PIXELS = 120  # More pixel margin
 
 ENABLE_DYNAMIC_ZOOM = True
-ZOOM_OUT_VELOCITY = 8
-ZOOM_MAX_VELOCITY = 30
-ZOOM_OUT_FACTOR = 3.5
-ZOOM_SMOOTHING = 0.12
+ZOOM_OUT_VELOCITY = 12  # Higher threshold for zoom activation
+ZOOM_MAX_VELOCITY = 45  # Higher max for stronger kicks
+ZOOM_OUT_FACTOR = 4.5  # Increased zoom out factor for more context
+ZOOM_SMOOTHING = 0.008  # Much smoother zoom transitions
 
-SMOOTHING_NORMAL = 0.025
-SMOOTHING_FAST = 0.08
-SMOOTHING_SIZE = 0.025
-BALL_SAFE_MARGIN = 0.25
+SMOOTHING_NORMAL = 0.008  # Slightly faster normal camera movement
+SMOOTHING_FAST = 0.12  # Even more responsive when ball near edge or moving fast
+SMOOTHING_SIZE = 0.005  # Slightly faster size changes
+BALL_POSITION_SMOOTHING = 0.18  # Smooth ball position but less lag
+BALL_SAFE_MARGIN = 0.45  # Large safety margin to keep ball well within frame
 
-ENABLE_PREDICTION = False
-PREDICTION_FRAMES = 2
-VELOCITY_SMOOTHING = 0.3
-MIN_VELOCITY = 5.0
+ENABLE_PREDICTION = True  # Enable predictive tracking to anticipate ball movement
+PREDICTION_FRAMES = 5  # Look ahead 5 frames
+PREDICTION_WEIGHT = 0.6  # How much to weight prediction vs current position (0-1)
+VELOCITY_SMOOTHING = 0.65  # Heavy smoothing to prevent velocity jitter
+SPEED_SMOOTHING = 0.3  # Additional smoothing for speed magnitude
+MIN_VELOCITY = 8.0  # Only predict for faster movements
 
 LEADING_SPACE_FACTOR = 0.0
 MIN_LEADING_SPACE = 0
 
-VELOCITY_THRESHOLD_SLOW = 10
-VELOCITY_THRESHOLD_FAST = 40
+VELOCITY_THRESHOLD_SLOW = 6   # Lower threshold for slow movement
+VELOCITY_THRESHOLD_FAST = 20  # Lower threshold to activate fast response sooner
 
 PLAYER_MODEL_PATH = "yolov8s.pt"
 PERSON_CLASS_ID = 0
@@ -179,11 +182,11 @@ def detect_red_candidates(
     candidates = []
     for cnt in contours:
         area = cv2.contourArea(cnt)
-        if area < 20 or area > 8000:
+        if area < 15 or area > 12000:  # Increased max area for fast moving/blurred ball
             continue
 
         (x, y), r = cv2.minEnclosingCircle(cnt)
-        if r < 4 or r > 70:
+        if r < 3 or r > 90:  # Increased max radius for motion blur
             continue
 
         peri = cv2.arcLength(cnt, True)
@@ -191,7 +194,7 @@ def detect_red_candidates(
             continue
 
         circ = 4 * np.pi * area / (peri * peri)
-        if circ < 0.45:
+        if circ < 0.35:  # More lenient circularity for motion blur
             continue
 
         candidates.append((int(x), int(y), int(r), circ, area))
@@ -282,11 +285,9 @@ def compute_view(ball, nearby, shape, ball_velocity=None, zoom_factor=1.0):
         return np.array([0, 0, w, h], float)
 
     bx, by, r = ball
-    original_bx, original_by = bx, by  # Keep original position for player framing
     
     # Apply predictive tracking if enabled and velocity is available
-    # This is used for leading space, not for centering the view
-    pred_offset_x, pred_offset_y = 0, 0
+    predicted_bx, predicted_by = bx, by
     if ENABLE_PREDICTION and ball_velocity is not None:
         vx, vy = ball_velocity
         speed = np.hypot(vx, vy)
@@ -296,10 +297,22 @@ def compute_view(ball, nearby, shape, ball_velocity=None, zoom_factor=1.0):
             # Calculate prediction offset
             pred_offset_x = vx * PREDICTION_FRAMES
             pred_offset_y = vy * PREDICTION_FRAMES
+            
+            # Blend current position with predicted position
+            predicted_bx = bx + pred_offset_x * PREDICTION_WEIGHT
+            predicted_by = by + pred_offset_y * PREDICTION_WEIGHT
+            
+            # Clamp to frame bounds
+            predicted_bx = max(0, min(w, predicted_bx))
+            predicted_by = max(0, min(h, predicted_by))
     
-    # Start with ball and nearby players at their ACTUAL positions
-    xs = [bx]
-    ys = [by]
+    # Use predicted position for framing the view
+    xs = [predicted_bx]
+    ys = [predicted_by]
+    
+    # But keep actual ball position in the calculation too for stability
+    xs.append(bx)
+    ys.append(by)
 
     for p in nearby:
         x1, y1, x2, y2 = p["bbox"]
@@ -388,7 +401,9 @@ def main():
     view_rect = None
     ball_velocity = np.array([0.0, 0.0])
     prev_ball_pos = None
+    smoothed_ball_pos = None  # Add smoothed ball position
     current_zoom = 1.0
+    smoothed_speed = 0.0  # Add smoothed speed to prevent jitter
     frame_count = 0
     cached_players = []
 
@@ -412,19 +427,32 @@ def main():
 
         if ball:
             bx, by, br = ball
+            
+            # Smooth ball position to reduce jitter
+            if smoothed_ball_pos is None:
+                smoothed_ball_pos = np.array([float(bx), float(by)])
+            else:
+                smoothed_ball_pos[0] = smoothed_ball_pos[0] * (1 - BALL_POSITION_SMOOTHING) + bx * BALL_POSITION_SMOOTHING
+                smoothed_ball_pos[1] = smoothed_ball_pos[1] * (1 - BALL_POSITION_SMOOTHING) + by * BALL_POSITION_SMOOTHING
+            
+            # Use smoothed position for tracking
+            bx_smooth, by_smooth = int(smoothed_ball_pos[0]), int(smoothed_ball_pos[1])
+            
             last_pos = (bx, by)
             last_radius = br
             missed = 0
             
-            # Update velocity
+            # Update velocity using smoothed position
             if prev_ball_pos is not None:
-                new_vx = bx - prev_ball_pos[0]
-                new_vy = by - prev_ball_pos[1]
+                new_vx = bx_smooth - prev_ball_pos[0]
+                new_vy = by_smooth - prev_ball_pos[1]
                 # Smooth velocity estimate
                 ball_velocity[0] = ball_velocity[0] * (1 - VELOCITY_SMOOTHING) + new_vx * VELOCITY_SMOOTHING
                 ball_velocity[1] = ball_velocity[1] * (1 - VELOCITY_SMOOTHING) + new_vy * VELOCITY_SMOOTHING
             
-            prev_ball_pos = (bx, by)
+            prev_ball_pos = (bx_smooth, by_smooth)
+            # Update ball to use smoothed position for view calculation
+            ball = (bx_smooth, by_smooth, br)
         else:
             if last_pos and missed < MAX_MISSED_FRAMES:
                 missed += 1
@@ -434,6 +462,7 @@ def main():
             else:
                 ball = None
                 prev_ball_pos = None
+                smoothed_ball_pos = None
 
         # --- Player detection (only every N frames) ---
         if frame_count % DETECTION_INTERVAL == 0:
@@ -449,21 +478,24 @@ def main():
         if ENABLE_DYNAMIC_ZOOM and ball_velocity is not None:
             speed = np.hypot(ball_velocity[0], ball_velocity[1])
             
-            if speed < ZOOM_OUT_VELOCITY:
+            # Smooth the speed itself to prevent jitter
+            smoothed_speed = smoothed_speed * (1 - SPEED_SMOOTHING) + speed * SPEED_SMOOTHING
+            
+            if smoothed_speed < ZOOM_OUT_VELOCITY:
                 target_zoom = 1.0  # Normal zoom
-            elif speed > ZOOM_MAX_VELOCITY:
+            elif smoothed_speed > ZOOM_MAX_VELOCITY:
                 target_zoom = ZOOM_OUT_FACTOR  # Maximum zoom out
             else:
-                # Interpolate zoom based on speed
-                t = (speed - ZOOM_OUT_VELOCITY) / (ZOOM_MAX_VELOCITY - ZOOM_OUT_VELOCITY)
+                # Interpolate zoom based on smoothed speed
+                t = (smoothed_speed - ZOOM_OUT_VELOCITY) / (ZOOM_MAX_VELOCITY - ZOOM_OUT_VELOCITY)
                 target_zoom = 1.0 + (ZOOM_OUT_FACTOR - 1.0) * t
             
-            # Smooth zoom changes
+            # Smooth zoom changes very aggressively
             current_zoom = current_zoom * (1 - ZOOM_SMOOTHING) + target_zoom * ZOOM_SMOOTHING
             
             # Debug: print every 30 frames
             if frame_count % 30 == 0:
-                print(f"Speed: {speed:.1f} px/frame | Zoom: {current_zoom:.2f}x")
+                print(f"Speed: {speed:.1f} (smoothed: {smoothed_speed:.1f}) px/frame | Zoom: {current_zoom:.2f}x")
         else:
             current_zoom = 1.0
 
@@ -473,17 +505,20 @@ def main():
         if view_rect is None:
             view_rect = target.copy()
         else:
-            # velocity-based adaptive smoothing
+            # velocity-based adaptive smoothing with smooth interpolation
             speed = np.hypot(ball_velocity[0], ball_velocity[1])
             
+            # Smooth interpolation between slow and fast smoothing (no sudden jumps)
             if speed < VELOCITY_THRESHOLD_SLOW:
                 base_alpha = SMOOTHING_NORMAL
             elif speed > VELOCITY_THRESHOLD_FAST:
                 base_alpha = SMOOTHING_FAST
             else:
-                # Interpolate between slow and fast based on speed
+                # Smooth interpolation to prevent jitter at threshold boundaries
                 t = (speed - VELOCITY_THRESHOLD_SLOW) / (VELOCITY_THRESHOLD_FAST - VELOCITY_THRESHOLD_SLOW)
-                base_alpha = SMOOTHING_NORMAL + (SMOOTHING_FAST - SMOOTHING_NORMAL) * t
+                # Use smooth curve instead of linear
+                t_smooth = t * t * (3.0 - 2.0 * t)  # Smoothstep function
+                base_alpha = SMOOTHING_NORMAL + (SMOOTHING_FAST - SMOOTHING_NORMAL) * t_smooth
             
             alpha = base_alpha
             if ball:

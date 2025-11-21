@@ -93,6 +93,11 @@ def auto_crop_black_borders(image: np.ndarray, threshold: int = 30, content_thre
     x = content_cols[0]
     x_end = content_cols[-1] + 1
     
+    # Add extra crop to bottom to ensure black borders are fully removed
+    crop_h = y_end - y
+    extra_bottom_crop = int(crop_h * 0.15)  # Remove extra 15% from bottom
+    y_end = max(y + 1, y_end - extra_bottom_crop)
+    
     return x, y, x_end - x, y_end - y
 
 
