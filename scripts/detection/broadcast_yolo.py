@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 from ultralytics import YOLO
+from filterpy.kalman import KalmanFilter
 
 # Load environment variables
 load_dotenv(Path(__file__).parent.parent.parent / '.env')
@@ -60,24 +61,28 @@ ZOOM_MAX_VELOCITY = 45  # Higher max for stronger kicks
 ZOOM_OUT_FACTOR = 4.5  # Increased zoom out factor for more context
 ZOOM_SMOOTHING = 0.008  # Much smoother zoom transitions
 
-SMOOTHING_NORMAL = 0.008  # Slightly faster normal camera movement
-SMOOTHING_FAST = 0.12  # Even more responsive when ball near edge or moving fast
-SMOOTHING_SIZE = 0.005  # Slightly faster size changes
+SMOOTHING_NORMAL = 0.006  # Smoother camera movement
+SMOOTHING_FAST = 0.05  # Balanced response - not too fast to cause jitter
+SMOOTHING_SIZE = 0.003  # Smoother size changes
 BALL_POSITION_SMOOTHING = 0.18  # Smooth ball position but less lag
-BALL_SAFE_MARGIN = 0.45  # Large safety margin to keep ball well within frame
+BALL_SAFE_MARGIN = 0.48  # Larger safety margin to keep ball in frame during speed changes
 
 ENABLE_PREDICTION = True  # Enable predictive tracking to anticipate ball movement
-PREDICTION_FRAMES = 5  # Look ahead 5 frames
-PREDICTION_WEIGHT = 0.6  # How much to weight prediction vs current position (0-1)
-VELOCITY_SMOOTHING = 0.65  # Heavy smoothing to prevent velocity jitter
-SPEED_SMOOTHING = 0.3  # Additional smoothing for speed magnitude
+USE_KALMAN_FILTER = True  # Use Kalman filter for smoother prediction
+USE_PLAYER_CONTEXT = True  # Use nearby player position to bias prediction
+PREDICTION_FRAMES = 6  # Look ahead more frames for fast ball
+PREDICTION_WEIGHT = 0.6  # Balanced prediction weight
+PLAYER_DIRECTION_WEIGHT = 0.25  # Reduced to prevent over-correction
+VELOCITY_SMOOTHING = 0.6  # Balanced velocity smoothing
+SPEED_SMOOTHING = 0.45  # More smoothing to reduce jitter from speed changes
 MIN_VELOCITY = 8.0  # Only predict for faster movements
 
 LEADING_SPACE_FACTOR = 0.0
 MIN_LEADING_SPACE = 0
 
-VELOCITY_THRESHOLD_SLOW = 6   # Lower threshold for slow movement
-VELOCITY_THRESHOLD_FAST = 20  # Lower threshold to activate fast response sooner
+VELOCITY_THRESHOLD_SLOW = 8   # Threshold for slow movement
+VELOCITY_THRESHOLD_FAST = 25  # Balanced threshold
+SPEED_CHANGE_THRESHOLD = 20  # Higher threshold - only react to very sudden changes
 
 PLAYER_MODEL_PATH = "yolov8s.pt"
 PERSON_CLASS_ID = 0
@@ -265,6 +270,37 @@ def detect_players_yolo(frame, exclusion_ratio=EXCLUSION_RATIO):
 
 # ---------------- NEARBY PLAYER & VIEW LOGIC ---------------- #
 
+def create_ball_kalman_filter():
+    """
+    Create a Kalman filter for ball tracking.
+    State: [x, y, vx, vy] - position and velocity in 2D
+    """
+    kf = KalmanFilter(dim_x=4, dim_z=2)
+    
+    # State transition matrix (assumes constant velocity model)
+    dt = 1.0  # time step (1 frame)
+    kf.F = np.array([[1, 0, dt, 0],
+                     [0, 1, 0, dt],
+                     [0, 0, 1, 0],
+                     [0, 0, 0, 1]])
+    
+    # Measurement function (we only measure position, not velocity)
+    kf.H = np.array([[1, 0, 0, 0],
+                     [0, 1, 0, 0]])
+    
+    # Measurement noise (uncertainty in ball detection)
+    kf.R = np.array([[10.0, 0],
+                     [0, 10.0]])
+    
+    # Process noise (uncertainty in motion model)
+    kf.Q = np.eye(4) * 0.5
+    
+    # Initial covariance
+    kf.P = np.eye(4) * 100.0
+    
+    return kf
+
+
 def choose_nearby(players, ball, max_count=2):
     if ball is None:
         return []
@@ -286,25 +322,73 @@ def compute_view(ball, nearby, shape, ball_velocity=None, zoom_factor=1.0):
 
     bx, by, r = ball
     
-    # Apply predictive tracking if enabled and velocity is available
+    # Apply predictive tracking
     predicted_bx, predicted_by = bx, by
+    
     if ENABLE_PREDICTION and ball_velocity is not None:
-        vx, vy = ball_velocity
-        speed = np.hypot(vx, vy)
-        
-        # Only predict if ball is moving fast enough
-        if speed > MIN_VELOCITY:
-            # Calculate prediction offset
-            pred_offset_x = vx * PREDICTION_FRAMES
-            pred_offset_y = vy * PREDICTION_FRAMES
+        if USE_KALMAN_FILTER:
+            # Kalman filter prediction is already in the state
+            # We'll get this from the main loop
+            vx, vy = ball_velocity
+            speed = np.hypot(vx, vy)
             
-            # Blend current position with predicted position
-            predicted_bx = bx + pred_offset_x * PREDICTION_WEIGHT
-            predicted_by = by + pred_offset_y * PREDICTION_WEIGHT
+            if speed > MIN_VELOCITY:
+                # Use Kalman filter velocity for prediction
+                pred_offset_x = vx * PREDICTION_FRAMES
+                pred_offset_y = vy * PREDICTION_FRAMES
+                
+                # Use player context to bias prediction if enabled
+                if USE_PLAYER_CONTEXT and len(nearby) > 0:
+                    # Find closest player to ball
+                    closest_player = None
+                    min_dist = float('inf')
+                    
+                    for p in nearby:
+                        pcx, pcy = p["centre"]
+                        dist = np.hypot(pcx - bx, pcy - by)
+                        if dist < min_dist:
+                            min_dist = dist
+                            closest_player = p
+                    
+                    if closest_player is not None and min_dist < 150:  # Only if very close
+                        # Calculate direction from player to ball
+                        pcx, pcy = closest_player["centre"]
+                        player_to_ball_x = bx - pcx
+                        player_to_ball_y = by - pcy
+                        
+                        # Normalize
+                        magnitude = np.hypot(player_to_ball_x, player_to_ball_y)
+                        if magnitude > 0:
+                            player_to_ball_x /= magnitude
+                            player_to_ball_y /= magnitude
+                            
+                            # Bias prediction in direction away from player
+                            # This assumes ball is likely to move away from nearby player
+                            bias_x = player_to_ball_x * speed * PLAYER_DIRECTION_WEIGHT
+                            bias_y = player_to_ball_y * speed * PLAYER_DIRECTION_WEIGHT
+                            
+                            pred_offset_x += bias_x * PREDICTION_FRAMES
+                            pred_offset_y += bias_y * PREDICTION_FRAMES
+                
+                predicted_bx = bx + pred_offset_x * PREDICTION_WEIGHT
+                predicted_by = by + pred_offset_y * PREDICTION_WEIGHT
+                
+                predicted_bx = max(0, min(w, predicted_bx))
+                predicted_by = max(0, min(h, predicted_by))
+        else:
+            # Original linear prediction
+            vx, vy = ball_velocity
+            speed = np.hypot(vx, vy)
             
-            # Clamp to frame bounds
-            predicted_bx = max(0, min(w, predicted_bx))
-            predicted_by = max(0, min(h, predicted_by))
+            if speed > MIN_VELOCITY:
+                pred_offset_x = vx * PREDICTION_FRAMES
+                pred_offset_y = vy * PREDICTION_FRAMES
+                
+                predicted_bx = bx + pred_offset_x * PREDICTION_WEIGHT
+                predicted_by = by + pred_offset_y * PREDICTION_WEIGHT
+                
+                predicted_bx = max(0, min(w, predicted_bx))
+                predicted_by = max(0, min(h, predicted_by))
     
     # Use predicted position for framing the view
     xs = [predicted_bx]
@@ -404,8 +488,14 @@ def main():
     smoothed_ball_pos = None  # Add smoothed ball position
     current_zoom = 1.0
     smoothed_speed = 0.0  # Add smoothed speed to prevent jitter
+    prev_speed = 0.0  # Track previous speed for acceleration detection
     frame_count = 0
     cached_players = []
+    
+    # Initialize Kalman filter for ball tracking
+    ball_kf = None
+    if USE_KALMAN_FILTER:
+        ball_kf = create_ball_kalman_filter()
 
     while True:
         ok, frame = cap.read()
@@ -428,41 +518,81 @@ def main():
         if ball:
             bx, by, br = ball
             
-            # Smooth ball position to reduce jitter
-            if smoothed_ball_pos is None:
-                smoothed_ball_pos = np.array([float(bx), float(by)])
+            if USE_KALMAN_FILTER and ball_kf is not None:
+                # Update Kalman filter with measurement
+                measurement = np.array([float(bx), float(by)])
+                
+                if last_pos is None:
+                    # Initialize filter state with first measurement
+                    ball_kf.x = np.array([bx, by, 0.0, 0.0])
+                
+                # Predict step
+                ball_kf.predict()
+                
+                # Update step
+                ball_kf.update(measurement)
+                
+                # Get filtered position and velocity
+                bx_smooth = int(ball_kf.x[0])
+                by_smooth = int(ball_kf.x[1])
+                vx_kalman = ball_kf.x[2]
+                vy_kalman = ball_kf.x[3]
+                
+                # Use Kalman velocity estimate
+                ball_velocity[0] = vx_kalman
+                ball_velocity[1] = vy_kalman
+                
+                # Update ball to use Kalman filtered position
+                ball = (bx_smooth, by_smooth, br)
+                
             else:
-                smoothed_ball_pos[0] = smoothed_ball_pos[0] * (1 - BALL_POSITION_SMOOTHING) + bx * BALL_POSITION_SMOOTHING
-                smoothed_ball_pos[1] = smoothed_ball_pos[1] * (1 - BALL_POSITION_SMOOTHING) + by * BALL_POSITION_SMOOTHING
-            
-            # Use smoothed position for tracking
-            bx_smooth, by_smooth = int(smoothed_ball_pos[0]), int(smoothed_ball_pos[1])
+                # Original smoothing approach
+                # Smooth ball position to reduce jitter
+                if smoothed_ball_pos is None:
+                    smoothed_ball_pos = np.array([float(bx), float(by)])
+                else:
+                    smoothed_ball_pos[0] = smoothed_ball_pos[0] * (1 - BALL_POSITION_SMOOTHING) + bx * BALL_POSITION_SMOOTHING
+                    smoothed_ball_pos[1] = smoothed_ball_pos[1] * (1 - BALL_POSITION_SMOOTHING) + by * BALL_POSITION_SMOOTHING
+                
+                # Use smoothed position for tracking
+                bx_smooth, by_smooth = int(smoothed_ball_pos[0]), int(smoothed_ball_pos[1])
+                
+                # Update velocity using smoothed position
+                if prev_ball_pos is not None:
+                    new_vx = bx_smooth - prev_ball_pos[0]
+                    new_vy = by_smooth - prev_ball_pos[1]
+                    # Smooth velocity estimate
+                    ball_velocity[0] = ball_velocity[0] * (1 - VELOCITY_SMOOTHING) + new_vx * VELOCITY_SMOOTHING
+                    ball_velocity[1] = ball_velocity[1] * (1 - VELOCITY_SMOOTHING) + new_vy * VELOCITY_SMOOTHING
+                
+                prev_ball_pos = (bx_smooth, by_smooth)
+                # Update ball to use smoothed position for view calculation
+                ball = (bx_smooth, by_smooth, br)
             
             last_pos = (bx, by)
             last_radius = br
             missed = 0
             
-            # Update velocity using smoothed position
-            if prev_ball_pos is not None:
-                new_vx = bx_smooth - prev_ball_pos[0]
-                new_vy = by_smooth - prev_ball_pos[1]
-                # Smooth velocity estimate
-                ball_velocity[0] = ball_velocity[0] * (1 - VELOCITY_SMOOTHING) + new_vx * VELOCITY_SMOOTHING
-                ball_velocity[1] = ball_velocity[1] * (1 - VELOCITY_SMOOTHING) + new_vy * VELOCITY_SMOOTHING
-            
-            prev_ball_pos = (bx_smooth, by_smooth)
-            # Update ball to use smoothed position for view calculation
-            ball = (bx_smooth, by_smooth, br)
         else:
             if last_pos and missed < MAX_MISSED_FRAMES:
                 missed += 1
                 bx, by = last_pos
                 br = last_radius or 10
-                ball = (bx, by, br)
+                
+                # If using Kalman, still predict even without measurement
+                if USE_KALMAN_FILTER and ball_kf is not None:
+                    ball_kf.predict()
+                    bx_pred = int(ball_kf.x[0])
+                    by_pred = int(ball_kf.x[1])
+                    ball = (bx_pred, by_pred, br)
+                else:
+                    ball = (bx, by, br)
             else:
                 ball = None
                 prev_ball_pos = None
                 smoothed_ball_pos = None
+                if USE_KALMAN_FILTER and ball_kf is not None:
+                    ball_kf = create_ball_kalman_filter()  # Reset filter
 
         # --- Player detection (only every N frames) ---
         if frame_count % DETECTION_INTERVAL == 0:
@@ -508,6 +638,10 @@ def main():
             # velocity-based adaptive smoothing with smooth interpolation
             speed = np.hypot(ball_velocity[0], ball_velocity[1])
             
+            # Detect sudden speed changes (acceleration)
+            speed_change = abs(speed - prev_speed)
+            is_accelerating = speed_change > SPEED_CHANGE_THRESHOLD
+            
             # Smooth interpolation between slow and fast smoothing (no sudden jumps)
             if speed < VELOCITY_THRESHOLD_SLOW:
                 base_alpha = SMOOTHING_NORMAL
@@ -520,6 +654,10 @@ def main():
                 t_smooth = t * t * (3.0 - 2.0 * t)  # Smoothstep function
                 base_alpha = SMOOTHING_NORMAL + (SMOOTHING_FAST - SMOOTHING_NORMAL) * t_smooth
             
+            # Boost responsiveness when accelerating
+            if is_accelerating:
+                base_alpha = min(base_alpha * 1.5, SMOOTHING_FAST * 1.2)  # Less aggressive boost
+            
             alpha = base_alpha
             if ball:
                 bx, by, _ = ball
@@ -531,7 +669,7 @@ def main():
                 sy1, sy2 = y1 + my, y2 - my
 
                 if not (sx1 <= bx <= sx2 and sy1 <= by <= sy2):
-                    alpha = SMOOTHING_FAST
+                    alpha = SMOOTHING_FAST * 1.2  # Less aggressive when near edge
 
             # Smooth position and size separately to prevent zoom jitter
             curr_cx = (view_rect[0] + view_rect[2]) / 2
@@ -558,6 +696,8 @@ def main():
                 new_cx + new_w/2,
                 new_cy + new_h/2
             ])
+            
+            prev_speed = speed
 
         # clamp + int conversion
         x1, y1, x2, y2 = map(int, map(round, view_rect))
