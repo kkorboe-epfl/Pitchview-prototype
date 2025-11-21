@@ -108,40 +108,41 @@ def auto_crop_black_borders(image: np.ndarray, threshold: int = 30, content_thre
 
 def match_exposure(frameL: np.ndarray, frameR: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Match exposure and color balance between left and right frames.
-    Uses histogram matching to align brightness and color distributions.
+    Match exposure between left and right frames.
+    Only matches luminance (brightness) to preserve original colors.
+    This prevents color shifts that can affect ball detection.
     """
     # Convert to LAB color space for better color/brightness separation
     lab_L = cv2.cvtColor(frameL, cv2.COLOR_BGR2LAB)
     lab_R = cv2.cvtColor(frameR, cv2.COLOR_BGR2LAB)
     
-    # Match each channel of right frame to left frame
-    matched_channels = []
-    for i in range(3):
-        # Compute histograms
-        hist_L = cv2.calcHist([lab_L], [i], None, [256], [0, 256])
-        hist_R = cv2.calcHist([lab_R], [i], None, [256], [0, 256])
-        
-        # Compute CDFs
-        cdf_L = hist_L.cumsum()
-        cdf_R = hist_R.cumsum()
-        
-        # Normalize CDFs
-        cdf_L = cdf_L / cdf_L[-1]
-        cdf_R = cdf_R / cdf_R[-1]
-        
-        # Create lookup table for histogram matching
-        lut = np.zeros(256, dtype=np.uint8)
-        for j in range(256):
-            # Find closest CDF value in L for each value in R
-            idx = np.searchsorted(cdf_L, cdf_R[j])
-            lut[j] = min(idx, 255)
-        
-        # Apply lookup table to right channel
-        matched_channels.append(cv2.LUT(lab_R[:, :, i], lut))
+    # Only match the L (luminance) channel, preserve A and B (color) channels
+    l_channel_L = lab_L[:, :, 0]
+    l_channel_R = lab_R[:, :, 0]
     
-    # Merge matched channels
-    matched_lab_R = cv2.merge(matched_channels)
+    # Compute histograms for L channel only
+    hist_L = cv2.calcHist([l_channel_L], [0], None, [256], [0, 256])
+    hist_R = cv2.calcHist([l_channel_R], [0], None, [256], [0, 256])
+    
+    # Compute CDFs
+    cdf_L = hist_L.cumsum()
+    cdf_R = hist_R.cumsum()
+    
+    # Normalize CDFs
+    cdf_L = cdf_L / cdf_L[-1]
+    cdf_R = cdf_R / cdf_R[-1]
+    
+    # Create lookup table for histogram matching
+    lut = np.zeros(256, dtype=np.uint8)
+    for j in range(256):
+        idx = np.searchsorted(cdf_L, cdf_R[j])
+        lut[j] = min(idx, 255)
+    
+    # Apply lookup table only to L channel
+    matched_l = cv2.LUT(l_channel_R, lut)
+    
+    # Merge matched L with original A and B channels
+    matched_lab_R = cv2.merge([matched_l, lab_R[:, :, 1], lab_R[:, :, 2]])
     matched_R = cv2.cvtColor(matched_lab_R, cv2.COLOR_LAB2BGR)
     
     return frameL, matched_R
@@ -253,8 +254,8 @@ def main():
                     help="Show a live preview window")
     ap.add_argument("--output", type=str, default=None,
                     help="Output MP4 file (optional)")
-    ap.add_argument("--fps", type=float, default=30.0,
-                    help="Output FPS (if writing to file)")
+    ap.add_argument("--fps", type=float, default=None,
+                    help="Output FPS (if writing to file). If not specified, uses input video FPS")
     ap.add_argument("--left-alpha", type=float, default=1.0,
                     help="Opacity of the left stream in [0..1] (e.g. 0.5)")
     ap.add_argument("--edge-blend", type=int, default=50,
@@ -277,6 +278,18 @@ def main():
     # Open sources
     capL = open_source(args.left, args.width, args.height)
     capR = open_source(args.right, args.width, args.height)
+
+    # Get FPS from input video if not specified
+    if args.fps is None:
+        detected_fps = capL.get(cv2.CAP_PROP_FPS)
+        if detected_fps > 0:
+            args.fps = detected_fps
+            print(f"[info] Detected input FPS: {detected_fps:.2f}")
+        else:
+            args.fps = 30.0
+            print(f"[warn] Could not detect FPS, using default: 30.0")
+    else:
+        print(f"[info] Using specified FPS: {args.fps}")
 
     # Apply sync offset by skipping frames
     if args.sync_offset > 0:

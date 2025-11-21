@@ -198,11 +198,24 @@ def detect_red_candidates(
         if peri == 0:
             continue
 
+        # Calculate circularity (how round the contour is)
         circ = 4 * np.pi * area / (peri * peri)
         if circ < 0.35:  # More lenient circularity for motion blur
             continue
+        
+        # Additional roundness check: compare contour area to bounding circle area
+        circle_area = np.pi * r * r
+        extent = area / circle_area if circle_area > 0 else 0
+        if extent < 0.5:  # Must occupy at least 50% of bounding circle
+            continue
+        
+        # Check aspect ratio of bounding rectangle
+        x_cnt, y_cnt, w_cnt, h_cnt = cv2.boundingRect(cnt)
+        aspect_ratio = float(w_cnt) / h_cnt if h_cnt > 0 else 0
+        if aspect_ratio < 0.6 or aspect_ratio > 1.7:  # Should be roughly square
+            continue
 
-        candidates.append((int(x), int(y), int(r), circ, area))
+        candidates.append((int(x), int(y), int(r), circ, area, extent))
 
     return candidates
 
@@ -211,11 +224,16 @@ def pick_best_candidate(cands, last_pos=None):
         return None
 
     best, best_score = None, -1
-    for (x, y, r, circ, area) in cands:
-        score = circ * 2.0
+    for (x, y, r, circ, area, extent) in cands:
+        # Heavily prioritize circularity and extent (roundness)
+        score = circ * 3.0 + extent * 2.0
+        
+        # Prefer consistent tracking
         if last_pos:
             lx, ly = last_pos
             score -= np.hypot(x - lx, y - ly) * 0.01
+        
+        # Slight bonus for reasonable size
         score += np.log(max(area, 1)) * 0.1
 
         if score > best_score:
