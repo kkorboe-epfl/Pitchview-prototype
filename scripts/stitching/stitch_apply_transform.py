@@ -66,22 +66,24 @@ def load_calibration(path: str):
     return H, offset, pano_size, used_affine, data
 
 
-def auto_crop_black_borders(image: np.ndarray, threshold: int = 30) -> Tuple[int, int, int, int]:
+def auto_crop_black_borders(image: np.ndarray, threshold: int = 30, content_threshold: float = 0.5) -> Tuple[int, int, int, int]:
     """
     Detect black borders and return crop coordinates (x, y, w, h).
     Finds the tightest bounding box around non-black content.
+    
+    Uses a stricter threshold to ensure all black borders (including bottom) are removed.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
     # Find rows and columns that have enough non-black pixels
-    # A row/column is considered "content" if >50% of pixels exceed threshold
+    # A row/column is considered "content" if more than content_threshold of pixels exceed threshold
     h, w = gray.shape
     row_counts = np.sum(gray > threshold, axis=1)
     col_counts = np.sum(gray > threshold, axis=0)
     
-    # Find first and last content rows and columns (>50% threshold)
-    content_rows = np.where(row_counts > w * 0.5)[0]
-    content_cols = np.where(col_counts > h * 0.5)[0]
+    # Find first and last content rows and columns
+    content_rows = np.where(row_counts > w * content_threshold)[0]
+    content_cols = np.where(col_counts > h * content_threshold)[0]
     
     if len(content_rows) == 0 or len(content_cols) == 0:
         return 0, 0, image.shape[1], image.shape[0]
@@ -205,6 +207,10 @@ def main():
                     help="Edge blend width in pixels for smoother seam at right edge (default: 50)")
     ap.add_argument("--auto-crop", action="store_true",
                     help="Automatically crop black borders from panorama")
+    ap.add_argument("--crop-threshold", type=int, default=30,
+                    help="Brightness threshold for detecting black borders (default: 30)")
+    ap.add_argument("--crop-content-ratio", type=float, default=0.5,
+                    help="Ratio of non-black pixels needed to consider a row/column as content (default: 0.5)")
 
     args = ap.parse_args()
 
@@ -243,7 +249,11 @@ def main():
         test_pano = stitch_pair(fL, fR, H, offset, pano_size, 
                                left_alpha=args.left_alpha,
                                edge_blend_width=args.edge_blend)
-        crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(test_pano)
+        crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(
+            test_pano, 
+            threshold=args.crop_threshold,
+            content_threshold=args.crop_content_ratio
+        )
         crop_region = (crop_x, crop_y, crop_w, crop_h)
         output_size = (crop_w, crop_h)
         print(f"[info] Auto-crop detected: x={crop_x}, y={crop_y}, w={crop_w}, h={crop_h}")

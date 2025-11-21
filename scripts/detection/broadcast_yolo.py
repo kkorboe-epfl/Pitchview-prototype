@@ -49,20 +49,20 @@ PLAYER_MAX_ASPECT = 5.0
 PLAYER_NEAR_DIST = 600
 
 BROADCAST_ASPECT = 16.0 / 9.0
-MIN_VIEW_WIDTH = 800
-MAX_VIEW_WIDTH = 2400
-MARGIN_FACTOR = 0.45
-MARGIN_PIXELS = 60
+MIN_VIEW_WIDTH = 1000
+MAX_VIEW_WIDTH = 2600
+MARGIN_FACTOR = 0.55
+MARGIN_PIXELS = 80
 
 ENABLE_DYNAMIC_ZOOM = True
 ZOOM_OUT_VELOCITY = 8
-ZOOM_MAX_VELOCITY = 25
-ZOOM_OUT_FACTOR = 2.5
-ZOOM_SMOOTHING = 0.06
+ZOOM_MAX_VELOCITY = 30
+ZOOM_OUT_FACTOR = 3.5
+ZOOM_SMOOTHING = 0.12
 
-SMOOTHING_NORMAL = 0.015
-SMOOTHING_FAST = 0.06
-SMOOTHING_SIZE = 0.015
+SMOOTHING_NORMAL = 0.025
+SMOOTHING_FAST = 0.08
+SMOOTHING_SIZE = 0.025
 BALL_SAFE_MARGIN = 0.25
 
 ENABLE_PREDICTION = False
@@ -320,27 +320,6 @@ def compute_view(ball, nearby, shape, ball_velocity=None, zoom_factor=1.0):
     xmax += mx
     ymin -= my
     ymax += my
-    
-    # Add leading space in direction of motion (using prediction offset)
-    if ball_velocity is not None:
-        vx, vy = ball_velocity
-        speed = np.hypot(vx, vy)
-        
-        if speed > MIN_VELOCITY:
-            # Calculate leading space based on velocity direction
-            leading_x = max(MIN_LEADING_SPACE, ww * LEADING_SPACE_FACTOR) + abs(pred_offset_x) * 0.3
-            leading_y = max(MIN_LEADING_SPACE, hh * LEADING_SPACE_FACTOR) + abs(pred_offset_y) * 0.3
-            
-            # Shift the view in direction of motion
-            if vx > 0:  # moving right
-                xmax += leading_x
-            elif vx < 0:  # moving left
-                xmin -= leading_x
-                
-            if vy > 0:  # moving down
-                ymax += leading_y
-            elif vy < 0:  # moving up
-                ymin -= leading_y
 
     xmin = max(0, xmin)
     ymin = max(0, ymin)
