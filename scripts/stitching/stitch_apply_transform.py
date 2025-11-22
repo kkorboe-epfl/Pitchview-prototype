@@ -45,8 +45,13 @@ def open_source(src: str, width: Optional[int], height: Optional[int]) -> cv2.Vi
     return cam
 
 
-def read_synced(capL: cv2.VideoCapture, capR: cv2.VideoCapture):
-    """Read a frame from both sources; return False if either fails."""
+def read_synced(capL: cv2.VideoCapture, capR: cv2.VideoCapture, offset: int = 0):
+    """
+    Read a frame from both sources with optional frame offset for sync.
+    
+    offset: number of frames to offset right camera (positive = right is ahead, skip frames)
+            negative = left is ahead
+    """
     okL, fL = capL.read()
     okR, fR = capR.read()
     if not okL or not okR:
@@ -66,22 +71,24 @@ def load_calibration(path: str):
     return H, offset, pano_size, used_affine, data
 
 
-def auto_crop_black_borders(image: np.ndarray, threshold: int = 30) -> Tuple[int, int, int, int]:
+def auto_crop_black_borders(image: np.ndarray, threshold: int = 30, content_threshold: float = 0.5) -> Tuple[int, int, int, int]:
     """
     Detect black borders and return crop coordinates (x, y, w, h).
     Finds the tightest bounding box around non-black content.
+    
+    Uses a stricter threshold to ensure all black borders (including bottom) are removed.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
     # Find rows and columns that have enough non-black pixels
-    # A row/column is considered "content" if >50% of pixels exceed threshold
+    # A row/column is considered "content" if more than content_threshold of pixels exceed threshold
     h, w = gray.shape
     row_counts = np.sum(gray > threshold, axis=1)
     col_counts = np.sum(gray > threshold, axis=0)
     
-    # Find first and last content rows and columns (>50% threshold)
-    content_rows = np.where(row_counts > w * 0.5)[0]
-    content_cols = np.where(col_counts > h * 0.5)[0]
+    # Find first and last content rows and columns
+    content_rows = np.where(row_counts > w * content_threshold)[0]
+    content_cols = np.where(col_counts > h * content_threshold)[0]
     
     if len(content_rows) == 0 or len(content_cols) == 0:
         return 0, 0, image.shape[1], image.shape[0]
@@ -91,7 +98,54 @@ def auto_crop_black_borders(image: np.ndarray, threshold: int = 30) -> Tuple[int
     x = content_cols[0]
     x_end = content_cols[-1] + 1
     
+    # Add extra crop to bottom to ensure black borders are fully removed
+    crop_h = y_end - y
+    extra_bottom_crop = int(crop_h * 0.20)  # Remove extra 20% from bottom
+    y_end = max(y + 1, y_end - extra_bottom_crop)
+    
     return x, y, x_end - x, y_end - y
+
+
+def match_exposure(frameL: np.ndarray, frameR: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Match exposure between left and right frames.
+    Only matches luminance (brightness) to preserve original colors.
+    This prevents color shifts that can affect ball detection.
+    """
+    # Convert to LAB color space for better color/brightness separation
+    lab_L = cv2.cvtColor(frameL, cv2.COLOR_BGR2LAB)
+    lab_R = cv2.cvtColor(frameR, cv2.COLOR_BGR2LAB)
+    
+    # Only match the L (luminance) channel, preserve A and B (color) channels
+    l_channel_L = lab_L[:, :, 0]
+    l_channel_R = lab_R[:, :, 0]
+    
+    # Compute histograms for L channel only
+    hist_L = cv2.calcHist([l_channel_L], [0], None, [256], [0, 256])
+    hist_R = cv2.calcHist([l_channel_R], [0], None, [256], [0, 256])
+    
+    # Compute CDFs
+    cdf_L = hist_L.cumsum()
+    cdf_R = hist_R.cumsum()
+    
+    # Normalize CDFs
+    cdf_L = cdf_L / cdf_L[-1]
+    cdf_R = cdf_R / cdf_R[-1]
+    
+    # Create lookup table for histogram matching
+    lut = np.zeros(256, dtype=np.uint8)
+    for j in range(256):
+        idx = np.searchsorted(cdf_L, cdf_R[j])
+        lut[j] = min(idx, 255)
+    
+    # Apply lookup table only to L channel
+    matched_l = cv2.LUT(l_channel_R, lut)
+    
+    # Merge matched L with original A and B channels
+    matched_lab_R = cv2.merge([matched_l, lab_R[:, :, 1], lab_R[:, :, 2]])
+    matched_R = cv2.cvtColor(matched_lab_R, cv2.COLOR_LAB2BGR)
+    
+    return frameL, matched_R
 
 
 def stitch_pair(frameL: np.ndarray,
@@ -107,6 +161,9 @@ def stitch_pair(frameL: np.ndarray,
     
     edge_blend_width: number of pixels to feather at the RIGHT edge of the left frame only
     """
+    # Apply exposure matching (always enabled)
+    frameL, frameR = match_exposure(frameL, frameR)
+    
     ox, oy = offset
     pano_w, pano_h = pano_size
 
@@ -197,14 +254,18 @@ def main():
                     help="Show a live preview window")
     ap.add_argument("--output", type=str, default=None,
                     help="Output MP4 file (optional)")
-    ap.add_argument("--fps", type=float, default=30.0,
-                    help="Output FPS (if writing to file)")
+    ap.add_argument("--fps", type=float, default=None,
+                    help="Output FPS (if writing to file). If not specified, uses input video FPS")
     ap.add_argument("--left-alpha", type=float, default=1.0,
                     help="Opacity of the left stream in [0..1] (e.g. 0.5)")
     ap.add_argument("--edge-blend", type=int, default=50,
                     help="Edge blend width in pixels for smoother seam at right edge (default: 50)")
-    ap.add_argument("--auto-crop", action="store_true",
-                    help="Automatically crop black borders from panorama")
+    ap.add_argument("--crop-threshold", type=int, default=30,
+                    help="Brightness threshold for detecting black borders (default: 30)")
+    ap.add_argument("--crop-content-ratio", type=float, default=0.5,
+                    help="Ratio of non-black pixels needed to consider a row/column as content (default: 0.5)")
+    ap.add_argument("--sync-offset", type=int, default=1,
+                    help="Frame offset for sync: positive if right camera is behind, negative if left is behind (default: 1)")
 
     args = ap.parse_args()
 
@@ -217,6 +278,28 @@ def main():
     # Open sources
     capL = open_source(args.left, args.width, args.height)
     capR = open_source(args.right, args.width, args.height)
+
+    # Get FPS from input video if not specified
+    if args.fps is None:
+        detected_fps = capL.get(cv2.CAP_PROP_FPS)
+        if detected_fps > 0:
+            args.fps = detected_fps
+            print(f"[info] Detected input FPS: {detected_fps:.2f}")
+        else:
+            args.fps = 30.0
+            print(f"[warn] Could not detect FPS, using default: 30.0")
+    else:
+        print(f"[info] Using specified FPS: {args.fps}")
+
+    # Apply sync offset by skipping frames
+    if args.sync_offset > 0:
+        print(f"[info] Skipping {args.sync_offset} frames from right camera for sync")
+        for _ in range(args.sync_offset):
+            capR.read()
+    elif args.sync_offset < 0:
+        print(f"[info] Skipping {-args.sync_offset} frames from left camera for sync")
+        for _ in range(-args.sync_offset):
+            capL.read()
 
     # Read first frames to sanity-check sizes
     ok, fL, fR = read_synced(capL, capR)
@@ -235,19 +318,22 @@ def main():
         scale = hL / float(hR)
         fR = cv2.resize(fR, (int(wR * scale), hL), interpolation=cv2.INTER_AREA)
 
-    # Detect crop region from first stitched frame if auto-crop enabled
+    # Detect crop region from first stitched frame (always enabled)
     crop_region = None
     output_size = pano_size
     
-    if args.auto_crop:
-        test_pano = stitch_pair(fL, fR, H, offset, pano_size, 
-                               left_alpha=args.left_alpha,
-                               edge_blend_width=args.edge_blend)
-        crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(test_pano)
-        crop_region = (crop_x, crop_y, crop_w, crop_h)
-        output_size = (crop_w, crop_h)
-        print(f"[info] Auto-crop detected: x={crop_x}, y={crop_y}, w={crop_w}, h={crop_h}")
-        print(f"[info] Output size: {output_size}")
+    test_pano = stitch_pair(fL, fR, H, offset, pano_size, 
+                           left_alpha=args.left_alpha,
+                           edge_blend_width=args.edge_blend)
+    crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(
+        test_pano, 
+        threshold=args.crop_threshold,
+        content_threshold=args.crop_content_ratio
+    )
+    crop_region = (crop_x, crop_y, crop_w, crop_h)
+    output_size = (crop_w, crop_h)
+    print(f"[info] Auto-crop detected: x={crop_x}, y={crop_y}, w={crop_w}, h={crop_h}")
+    print(f"[info] Output size: {output_size}")
 
     # Prepare writer (after we know output size)
     vw = writer_from_args(args.output, output_size, args.fps) if args.output else None
@@ -278,10 +364,9 @@ def main():
                           left_alpha=args.left_alpha,
                           edge_blend_width=args.edge_blend)
 
-        # Apply crop if enabled
-        if crop_region is not None:
-            cx, cy, cw, ch = crop_region
-            pano = pano[cy:cy+ch, cx:cx+cw]
+        # Apply crop (always enabled)
+        cx, cy, cw, ch = crop_region
+        pano = pano[cy:cy+ch, cx:cx+cw]
 
         frames += 1
         if frames % 10 == 0:

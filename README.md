@@ -10,6 +10,7 @@ Affordable automated sports broadcast system using dual Pi HQ cameras. Stitches 
   - Black border artifact cleanup
   - Smooth edge blending at seam
   - Auto-crop for clean output
+  - Exposure compensation for color matching
 - Ball tracking with HSV color detection
 - Player detection with YOLOv8
 - Automated broadcast camera with velocity-based smoothing
@@ -17,56 +18,61 @@ Affordable automated sports broadcast system using dual Pi HQ cameras. Stitches 
 
 ## Quick Start
 
+### macOS / Linux
+
 ```bash
-# 1. Install dependencies
+# 1. Activate virtual environment
+source venv/bin/activate
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Download sample videos
+# 3. Download sample videos
 cd data && ./download_videos.sh && cd ..
 
-# or for windows powershell:
-# cd data & "C:\Program Files\Git\bin\bash.exe" download_videos.sh & cd ..
-
-# 3. Stitch dual-camera videos into panorama
+# 4. Stitch dual-camera videos into panorama
 python3 scripts/stitching/stitch_apply_transform.py \
   --left data/raw/20251116_103024_left.mp4 \
   --right data/raw/20251116_103024_right.mp4 \
   --calib data/calibration/rig_calibration.json \
-  --output output/stitched/panorama.mp4 \
-  --auto-crop
+  --output output/stitched/panorama.mp4
 
-# 4. Generate broadcast view with tracking
+# 5. Generate broadcast view with tracking
 python3 scripts/detection/broadcast_yolo.py \
   --video output/stitched/panorama.mp4 \
   --save-broadcast output/broadcast/game.mp4
-
 ```
 
-# or for windows powershell:
-```bash
+### Windows (PowerShell)
+
+```powershell
+# 1. Activate virtual environment
+.\venv\Scripts\Activate.ps1
+
+# If you get an execution policy error, run this first:
 # Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 #  data\.venv\Scripts\Activate.ps1
 # 1. Install dependencies
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Download sample videos
+# 3. Download sample videos
 cd data
 & "C:\Program Files\Git\bin\bash.exe" "./download_videos.sh"
 cd ..
 
-# 3. Stitch dual-camera videos into panorama
+# 4. Stitch dual-camera videos into panorama
 python scripts/stitching/stitch_apply_transform.py `
   --left data/raw/20251116_103024_left.mp4 `
   --right data/raw/20251116_103024_right.mp4 `
   --calib data/calibration/rig_calibration.json `
-  --output output/stitched/panorama.mp4 `
-  --auto-crop
+  --output output/stitched/panorama.mp4
 
-# 4. Generate broadcast view with tracking
+# 5. Generate broadcast view with tracking
 python scripts/detection/broadcast_yolo.py `
   --video output/stitched/panorama.mp4 `
   --save-broadcast output/broadcast/game.mp4
-
 ```
 pitchview-prototype/
 ├── data/
@@ -92,13 +98,16 @@ python3 scripts/stitching/stitch_apply_transform.py \
   --left data/raw/20251116_103024_left.mp4 \
   --right data/raw/20251116_103024_right.mp4 \
   --calib data/calibration/rig_calibration.json \
-  --output output/stitched/panorama.mp4 \
-  --auto-crop
+  --output output/stitched/panorama.mp4
 ```
 
+**Note:** Auto-crop and color matching are always enabled for optimal output quality.
+
 **Options:**
-- `--auto-crop` - Automatically remove black borders
+- `--sync-offset N` - Sync videos by offsetting frames (positive if right is behind, negative if left is behind, default: 4)
 - `--edge-blend N` - Blend width in pixels (default: 50)
+- `--crop-threshold N` - Brightness threshold for detecting black borders (default: 30)
+- `--crop-content-ratio N` - Ratio of non-black pixels needed for content detection (default: 0.5)
 - `--preview` - Show live preview window
 
 ### Step 2: Broadcast Generation
