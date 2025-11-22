@@ -45,7 +45,7 @@ python3 scripts/detection/broadcast_yolo.py \
 # or for windows powershell:
 ```bash
 # Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-#  .\.venv\Scripts\Activate.ps1
+#  data\.venv\Scripts\Activate.ps1
 # 1. Install dependencies
 pip install -r requirements.txt
 
