@@ -30,14 +30,21 @@ pip install -r requirements.txt
 # 3. Download sample videos
 cd data && ./download_videos.sh && cd ..
 
-# 4. Stitch dual-camera videos into panorama
-python3 scripts/stitching/stitch_apply_transform.py \
-  --left data/raw/20251116_103024_left.mp4 \
-  --right data/raw/20251116_103024_right.mp4 \
-  --calib data/calibration/rig_calibration.json \
-  --output output/stitched/panorama.mp4
+# 4. Undistort fisheye videos
+python3 scripts/undistort_video.py --camera left --input data/raw/leftflip.mp4 --output data/undistorted/left.mp4
+python3 scripts/undistort_video.py --camera right --input data/raw/rightflip.mp4 --output data/undistorted/right.mp4
 
-# 5. Generate broadcast view with tracking
+# 5. Stitch dual-camera videos into panorama
+python3 scripts/stitching/stitch_apply_transform.py \
+  --left data/undistorted/left.mp4 \
+  --right data/undistorted/right.mp4 \
+  --calib data/calibration/custom_calibration.json \
+  --output output/stitched/panorama.mp4 \
+  --seam-x 3900 \
+  --sync-offset -1 \
+  --preview
+
+# 6. Generate broadcast view with tracking
 python3 scripts/detection/broadcast_yolo.py \
   --video output/stitched/panorama.mp4 \
   --save-broadcast output/broadcast/game.mp4
@@ -62,14 +69,21 @@ cd data
 & "C:\Program Files\Git\bin\bash.exe" "./download_videos.sh"
 cd ..
 
-# 4. Stitch dual-camera videos into panorama
-python scripts/stitching/stitch_apply_transform.py `
-  --left data/raw/20251116_103024_left.mp4 `
-  --right data/raw/20251116_103024_right.mp4 `
-  --calib data/calibration/rig_calibration.json `
-  --output output/stitched/panorama.mp4
+# 4. Undistort fisheye videos
+python scripts/undistort_video.py --camera left --input data/raw/leftflip.mp4 --output data/undistorted/left.mp4
+python scripts/undistort_video.py --camera right --input data/raw/rightflip.mp4 --output data/undistorted/right.mp4
 
-# 5. Generate broadcast view with tracking
+# 5. Stitch dual-camera videos into panorama
+python scripts/stitching/stitch_apply_transform.py `
+  --left data/undistorted/left.mp4 `
+  --right data/undistorted/right.mp4 `
+  --calib data/calibration/custom_calibration.json `
+  --output output/stitched/panorama.mp4 `
+  --seam-x 3900 `
+  --sync-offset -1 `
+  --preview
+
+# 6. Generate broadcast view with tracking
 python scripts/detection/broadcast_yolo.py `
   --video output/stitched/panorama.mp4 `
   --save-broadcast output/broadcast/game.mp4
@@ -95,10 +109,12 @@ Uses pre-computed calibration to stitch left and right camera feeds:
 
 ```bash
 python3 scripts/stitching/stitch_apply_transform.py \
-  --left data/raw/20251116_103024_left.mp4 \
-  --right data/raw/20251116_103024_right.mp4 \
-  --calib data/calibration/rig_calibration.json \
-  --output output/stitched/panorama.mp4
+  --left data/undistorted/left.mp4 \
+  --right data/undistorted/right.mp4 \
+  --calib data/calibration/custom_calibration.json \
+  --output output/stitched/panorama.mp4 \
+  --seam-x 3900 \
+  --sync-offset -1
 ```
 
 **Note:** Auto-crop and color matching are always enabled for optimal output quality.
@@ -127,12 +143,28 @@ python3 scripts/detection/broadcast_yolo.py \
 
 ## Calibration (One-time Setup)
 
-If using different cameras or changing camera positions, create new calibration:
+### Fisheye Undistortion
+
+Undistort fisheye camera footage before stitching:
+
+```bash
+# For left camera
+python3 scripts/undistort_video.py --camera left --input raw_left.mp4 --output ata/undistorted/left.mp4
+
+# For right camera
+python3 scripts/undistort_video.py --camera right --input raw_right.mp4 --output data/undistorted/right.mp4
+```
+
+**Note:** Update calibration parameters in `scripts/undistort_video.py` for your specific cameras.
+
+### Rig Calibration
+
+If using different cameras or changing camera positions, create new stitching calibration:
 
 ```bash
 python3 scripts/stitching/stitch_export_transform.py \
-  --left data/raw/your_left.mp4 \
-  --right data/raw/your_right.mp4 \
+  --left data/undistorted/left.mp4 \
+  --right data/undistorted/right.mp4 \
   --save-calib data/calibration/custom_calibration.json \
   --preview
 ```

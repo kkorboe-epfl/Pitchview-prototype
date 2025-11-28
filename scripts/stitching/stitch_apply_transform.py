@@ -108,41 +108,52 @@ def auto_crop_black_borders(image: np.ndarray, threshold: int = 30, content_thre
 
 def match_exposure(frameL: np.ndarray, frameR: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Match exposure between left and right frames.
-    Only matches luminance (brightness) to preserve original colors.
-    This prevents color shifts that can affect ball detection.
+    Match exposure and color tint between left and right frames.
+    Matches both luminance and color channels with gentle blending.
     """
     # Convert to LAB color space for better color/brightness separation
     lab_L = cv2.cvtColor(frameL, cv2.COLOR_BGR2LAB)
     lab_R = cv2.cvtColor(frameR, cv2.COLOR_BGR2LAB)
     
-    # Only match the L (luminance) channel, preserve A and B (color) channels
-    l_channel_L = lab_L[:, :, 0]
-    l_channel_R = lab_R[:, :, 0]
+    # Match all three channels: L (luminance), A (green-magenta), B (blue-yellow)
+    matched_channels = []
     
-    # Compute histograms for L channel only
-    hist_L = cv2.calcHist([l_channel_L], [0], None, [256], [0, 256])
-    hist_R = cv2.calcHist([l_channel_R], [0], None, [256], [0, 256])
+    for channel_idx in range(3):
+        channel_L = lab_L[:, :, channel_idx]
+        channel_R = lab_R[:, :, channel_idx]
+        
+        # Compute histograms
+        hist_L = cv2.calcHist([channel_L], [0], None, [256], [0, 256])
+        hist_R = cv2.calcHist([channel_R], [0], None, [256], [0, 256])
+        
+        # Compute CDFs
+        cdf_L = hist_L.cumsum()
+        cdf_R = hist_R.cumsum()
+        
+        # Normalize CDFs
+        cdf_L = cdf_L / cdf_L[-1]
+        cdf_R = cdf_R / cdf_R[-1]
+        
+        # Create lookup table for histogram matching
+        lut = np.zeros(256, dtype=np.uint8)
+        for j in range(256):
+            idx = np.searchsorted(cdf_L, cdf_R[j])
+            lut[j] = min(idx, 255)
+        
+        # Apply lookup table
+        matched_channel = cv2.LUT(channel_R, lut)
+        
+        # Gentle blend: more matching for color channels (A, B), less for luminance (L)
+        if channel_idx == 0:  # L channel (luminance)
+            blend_strength = 0.5
+        else:  # A and B channels (color tint)
+            blend_strength = 0.7
+        
+        blended_channel = cv2.addWeighted(matched_channel, blend_strength, channel_R, 1.0 - blend_strength, 0)
+        matched_channels.append(blended_channel.astype(np.uint8))
     
-    # Compute CDFs
-    cdf_L = hist_L.cumsum()
-    cdf_R = hist_R.cumsum()
-    
-    # Normalize CDFs
-    cdf_L = cdf_L / cdf_L[-1]
-    cdf_R = cdf_R / cdf_R[-1]
-    
-    # Create lookup table for histogram matching
-    lut = np.zeros(256, dtype=np.uint8)
-    for j in range(256):
-        idx = np.searchsorted(cdf_L, cdf_R[j])
-        lut[j] = min(idx, 255)
-    
-    # Apply lookup table only to L channel
-    matched_l = cv2.LUT(l_channel_R, lut)
-    
-    # Merge matched L with original A and B channels
-    matched_lab_R = cv2.merge([matched_l, lab_R[:, :, 1], lab_R[:, :, 2]])
+    # Merge all matched channels
+    matched_lab_R = cv2.merge(matched_channels)
     matched_R = cv2.cvtColor(matched_lab_R, cv2.COLOR_LAB2BGR)
     
     return frameL, matched_R
@@ -154,12 +165,16 @@ def stitch_pair(frameL: np.ndarray,
                 offset: Tuple[int, int],
                 pano_size: Tuple[int, int],
                 left_alpha: float = 1.0,
-                edge_blend_width: int = 50) -> np.ndarray:
+                edge_blend_width: int = 50,
+                seam_x: Optional[int] = None) -> np.ndarray:
     """
     Apply precomputed homography and offset to stitch a pair of frames
     into a panoramic canvas of size pano_size.
     
-    edge_blend_width: number of pixels to feather at the RIGHT edge of the left frame only
+    edge_blend_width: number of pixels to feather at the seam
+    seam_x: X coordinate in panorama where the seam should be placed.
+            Left frame shows to the left of this line, right frame to the right.
+            If None, uses the natural overlap from the offset.
     """
     # Apply exposure matching (always enabled)
     frameL, frameR = match_exposure(frameL, frameR)
@@ -180,7 +195,52 @@ def stitch_pair(frameL: np.ndarray,
     hL, wL = frameL.shape[:2]
     x0, y0 = ox, oy
     x1, y1 = ox + wL, oy + hL
+    
+    # If seam_x is specified, use it to control the blend point
+    if seam_x is not None:
+        # Create a mask that shows left frame left of seam, right frame right of seam
+        blend_mask = np.zeros((pano_h, pano_w), dtype=np.float32)
+        
+        # Left of seam: full left frame (1.0)
+        blend_mask[:, :seam_x - edge_blend_width // 2] = 1.0
+        
+        # Blend zone: gradient from left to right
+        blend_start = seam_x - edge_blend_width // 2
+        blend_end = seam_x + edge_blend_width // 2
+        blend_start = max(0, blend_start)
+        blend_end = min(pano_w, blend_end)
+        
+        for x in range(blend_start, blend_end):
+            alpha = 1.0 - (x - blend_start) / float(edge_blend_width)
+            blend_mask[:, x] = alpha
+        
+        # Right of seam: no left frame (0.0) - already initialized to 0
+        
+        # Apply left frame with the blend mask
+        x0c, y0c = max(0, x0), max(0, y0)
+        x1c, y1c = min(pano_w, x1), min(pano_h, y1)
+        
+        if x1c > x0c and y1c > y0c:
+            lx0 = x0c - x0
+            ly0 = y0c - y0
+            lx1 = lx0 + (x1c - x0c)
+            ly1 = ly0 + (y1c - y0c)
+            
+            roi_base = base[y0c:y1c, x0c:x1c]
+            roi_left = frameL[ly0:ly1, lx0:lx1]
+            roi_mask = blend_mask[y0c:y1c, x0c:x1c]
+            
+            # Blend
+            roi_base_f = roi_base.astype(np.float32)
+            roi_left_f = roi_left.astype(np.float32)
+            roi_mask_3ch = np.stack([roi_mask] * 3, axis=2)
+            
+            blended = roi_base_f * (1.0 - roi_mask_3ch) + roi_left_f * roi_mask_3ch
+            base[y0c:y1c, x0c:x1c] = blended.astype(np.uint8)
+        
+        return base
 
+    # Original blending logic when seam_x is not specified
     # clamp ROI to canvas (safety)
     x0c, y0c = max(0, x0), max(0, y0)
     x1c, y1c = min(pano_w, x1), min(pano_h, y1)
@@ -194,26 +254,34 @@ def stitch_pair(frameL: np.ndarray,
         roi_base = base[y0c:y1c, x0c:x1c]
         roi_left = frameL[ly0:ly1, lx0:lx1]
 
-        # Create alpha mask for blending only the RIGHT edge of the left frame
+        # Create alpha mask for blending
         h_roi, w_roi = roi_left.shape[:2]
-        alpha_mask = np.ones((h_roi, w_roi), dtype=np.float32) * left_alpha
         
-        # Feather only the right edge
-        blend_w = min(edge_blend_width, w_roi // 2)
-        
-        for i in range(blend_w):
-            # Fade from left_alpha at the edge to 0 as we go left
-            alpha_mask[:, w_roi - 1 - i] = left_alpha * (i / float(blend_w))
-        
-        # Expand mask to 3 channels
-        alpha_mask_3ch = np.stack([alpha_mask] * 3, axis=2)
-        
-        # Apply the feathered blend
+        # Apply the blended overlay
         roi_base_f = roi_base.astype(np.float32)
         roi_left_f = roi_left.astype(np.float32)
         
-        blended = roi_base_f * (1.0 - alpha_mask_3ch) + roi_left_f * alpha_mask_3ch
-        roi_base[:] = blended.astype(np.uint8)
+        if left_alpha >= 1.0:
+            # Full opacity: left frame completely replaces the base
+            base[y0c:y1c, x0c:x1c] = roi_left
+        else:
+            # Create alpha mask
+            alpha_mask = np.ones((h_roi, w_roi), dtype=np.float32) * left_alpha
+            
+            # Feather only the right edge for smooth transition
+            blend_w = min(edge_blend_width, w_roi // 2)
+            
+            for i in range(blend_w):
+                # Fade from left_alpha to 0 at the right edge
+                fade_factor = i / float(blend_w)
+                alpha_mask[:, w_roi - 1 - i] = left_alpha * fade_factor
+            
+            # Expand mask to 3 channels
+            alpha_mask_3ch = np.stack([alpha_mask] * 3, axis=2)
+            
+            # Blend: base * (1 - alpha) + left * alpha
+            blended = roi_base_f * (1.0 - alpha_mask_3ch) + roi_left_f * alpha_mask_3ch
+            base[y0c:y1c, x0c:x1c] = blended.astype(np.uint8)
 
     return base
 
@@ -256,15 +324,17 @@ def main():
                     help="Output MP4 file (optional)")
     ap.add_argument("--fps", type=float, default=None,
                     help="Output FPS (if writing to file). If not specified, uses input video FPS")
-    ap.add_argument("--left-alpha", type=float, default=1.0,
+    ap.add_argument("--left-alpha", type=float, default=0.5,
                     help="Opacity of the left stream in [0..1] (e.g. 0.5)")
     ap.add_argument("--edge-blend", type=int, default=50,
                     help="Edge blend width in pixels for smoother seam at right edge (default: 50)")
+    ap.add_argument("--seam-x", type=int, default=None,
+                    help="X coordinate in panorama where seam should be placed (optional). If not set, uses natural overlap.")
     ap.add_argument("--crop-threshold", type=int, default=30,
                     help="Brightness threshold for detecting black borders (default: 30)")
     ap.add_argument("--crop-content-ratio", type=float, default=0.5,
                     help="Ratio of non-black pixels needed to consider a row/column as content (default: 0.5)")
-    ap.add_argument("--sync-offset", type=int, default=1,
+    ap.add_argument("--sync-offset", type=int, default=0,
                     help="Frame offset for sync: positive if right camera is behind, negative if left is behind (default: 1)")
 
     args = ap.parse_args()
@@ -324,7 +394,8 @@ def main():
     
     test_pano = stitch_pair(fL, fR, H, offset, pano_size, 
                            left_alpha=args.left_alpha,
-                           edge_blend_width=args.edge_blend)
+                           edge_blend_width=args.edge_blend,
+                           seam_x=args.seam_x)
     crop_x, crop_y, crop_w, crop_h = auto_crop_black_borders(
         test_pano, 
         threshold=args.crop_threshold,
@@ -334,6 +405,9 @@ def main():
     output_size = (crop_w, crop_h)
     print(f"[info] Auto-crop detected: x={crop_x}, y={crop_y}, w={crop_w}, h={crop_h}")
     print(f"[info] Output size: {output_size}")
+    
+    if args.seam_x is not None:
+        print(f"[info] Using custom seam position at x={args.seam_x}")
 
     # Prepare writer (after we know output size)
     vw = writer_from_args(args.output, output_size, args.fps) if args.output else None
@@ -362,7 +436,8 @@ def main():
 
         pano = stitch_pair(fL, fR, H, offset, pano_size, 
                           left_alpha=args.left_alpha,
-                          edge_blend_width=args.edge_blend)
+                          edge_blend_width=args.edge_blend,
+                          seam_x=args.seam_x)
 
         # Apply crop (always enabled)
         cx, cy, cw, ch = crop_region
