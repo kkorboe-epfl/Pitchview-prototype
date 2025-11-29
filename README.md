@@ -18,6 +18,35 @@ Affordable automated sports broadcast system using dual Pi HQ cameras. Stitches 
 
 ## Quick Start
 
+### Option 1: Full Pipeline (Automated)
+
+Run the entire pipeline in one command - undistorts, stitches, and generates broadcast view with screenshots at each step:
+
+```bash
+# 1. Activate virtual environment
+source venv/bin/activate
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Run full pipeline
+python3 scripts/run_full_pipeline.py \
+  --left-raw data/raw/leftflip.mp4 \
+  --right-raw data/raw/rightflip.mp4 \
+  --calib data/calibration/custom_calibration.json \
+  --output-dir output/pipeline
+```
+
+This will automatically:
+- Undistort both camera videos
+- Stitch them into a panorama
+- Generate broadcast view with player/ball tracking
+- Save screenshots at each step for debugging
+
+All outputs will be in `output/pipeline/` with screenshots in `output/pipeline/screenshots/`.
+
+### Option 2: Step-by-Step
+
 ### macOS / Linux
 
 ```bash
