@@ -88,7 +88,6 @@ python3 scripts/detection/broadcast_yolo.py \
 # If you get an execution policy error, run this first:
 # Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 #  data\.venv\Scripts\Activate.ps1
-# 1. Install dependencies
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -99,18 +98,13 @@ cd data
 cd ..
 
 # 4. Undistort fisheye videos
-python scripts/undistort_video.py --camera left --input data/raw/leftflip.mp4 --output data/undistorted/left.mp4
-python scripts/undistort_video.py --camera right --input data/raw/rightflip.mp4 --output data/undistorted/right.mp4
+python scripts/undistort_video.py 
+
+#if you want to manually adjust the stitching parameters, run:
+# python .\scripts\stitching\manual_stitch.py --stretch 0.4 
 
 # 5. Stitch dual-camera videos into panorama
-python scripts/stitching/stitch_apply_transform.py `
-  --left data/undistorted/left.mp4 `
-  --right data/undistorted/right.mp4 `
-  --calib data/calibration/custom_calibration.json `
-  --output output/stitched/panorama.mp4 `
-  --seam-x 3900 `
-  --sync-offset -1 `
-  --preview
+python scripts/stitching/apply_manual_stitch.py --seam-top 2030 --seam-bottom 2125 --feather 15  
 
 # 6. Generate broadcast view with tracking
 python scripts/detection/broadcast_yolo.py `

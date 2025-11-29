@@ -1,18 +1,7 @@
-#!/usr/bin/env python3
-"""
-Simple and robust panoramic calibration for dual-camera stitching.
-Computes homography from feature matching and exports transform for later use.
-
-Usage:
-  python scripts/stitching/stitch_export_transform.py \
-    --left data/undistorted/left.mp4 \
-    --right data/undistorted/right.mp4 \
-    --save-calib data/calibration/custom_calibration.json \
-    --preview
-"""
 import argparse
 import sys
 import json
+import os
 import numpy as np
 import cv2
 
@@ -34,10 +23,9 @@ def read_frame(cap):
 
 
 def detect_features(image, max_features=10000):
-    """Detect ORB features in grayscale image."""
+    """Detect SIFT features in grayscale image."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     
-    # Use SIFT instead of ORB for better feature detection
     sift = cv2.SIFT_create(nfeatures=max_features)
     keypoints, descriptors = sift.detectAndCompute(gray, None)
     
@@ -46,7 +34,6 @@ def detect_features(image, max_features=10000):
 
 def match_features(desc1, desc2, ratio_threshold=0.7):
     """Match features using FLANN matcher with ratio test."""
-    # FLANN parameters for SIFT
     FLANN_INDEX_KDTREE = 1
     index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
     search_params = dict(checks=50)
@@ -162,7 +149,7 @@ def calculate_canvas_size(left_shape, right_shape, H):
 
 
 def stitch_images(left, right, H, offset, canvas_size):
-    """Stitch two images using the homography."""
+    """Stitch two images using the homography with blending."""
     width, height = canvas_size
     offset_x, offset_y = offset
     
@@ -177,24 +164,36 @@ def stitch_images(left, right, H, offset, canvas_size):
     H_shifted = T @ H
     right_warped = cv2.warpPerspective(right, H_shifted, (width, height))
     
-    # Place left image
-    result = right_warped.copy()
-    h_left, w_left = left.shape[:2]
+    # Create masks
+    right_mask = cv2.warpPerspective(np.ones_like(right, dtype=np.float32), 
+                                      H_shifted, (width, height))
     
-    # Make sure left image fits within canvas
+    # Place left image
+    result = np.zeros((height, width, 3), dtype=np.float32)
+    left_mask = np.zeros((height, width, 3), dtype=np.float32)
+    
+    h_left, w_left = left.shape[:2]
     y_end = min(offset_y + h_left, height)
     x_end = min(offset_x + w_left, width)
     h_copy = y_end - offset_y
     w_copy = x_end - offset_x
     
-    # Copy left image over (simple overlay for now)
-    result[offset_y:y_end, offset_x:x_end] = left[:h_copy, :w_copy]
+    result[offset_y:y_end, offset_x:x_end] = left[:h_copy, :w_copy].astype(np.float32)
+    left_mask[offset_y:y_end, offset_x:x_end] = 1.0
     
-    return result
+    # Simple blending where images overlap
+    total_mask = left_mask + right_mask
+    total_mask[total_mask == 0] = 1.0  # Avoid division by zero
+    
+    result = (result + right_warped.astype(np.float32)) / total_mask
+    
+    return result.astype(np.uint8)
 
 
 def save_calibration(path, H, offset, pano_size):
     """Save calibration to JSON file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    
     data = {
         "H": H.tolist(),
         "offset": list(offset),
@@ -210,16 +209,33 @@ def save_calibration(path, H, offset, pano_size):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Compute and export panoramic stitching calibration'
+        description='Stitch left and right undistorted videos into panorama'
     )
-    parser.add_argument('--left', required=True, help='Left video path')
-    parser.add_argument('--right', required=True, help='Right video path')
-    parser.add_argument('--save-calib', required=True, help='Output calibration JSON path')
-    parser.add_argument('--preview', action='store_true', help='Show preview window')
+    parser.add_argument('--left', default='data/undistorted/left.mp4', 
+                        help='Left video path (default: data/undistorted/left.mp4)')
+    parser.add_argument('--right', default='data/undistorted/right.mp4',
+                        help='Right video path (default: data/undistorted/right.mp4)')
+    parser.add_argument('--output', default='data/stitched/panorama.mp4',
+                        help='Output video path (default: data/stitched/panorama.mp4)')
+    parser.add_argument('--calib', default='data/calibration/stitch_calibration.json',
+                        help='Calibration output path (default: data/calibration/stitch_calibration.json)')
+    parser.add_argument('--preview', action='store_true', 
+                        help='Show preview of stitched frame')
+    parser.add_argument('--process-video', action='store_true',
+                        help='Process and save entire stitched video')
     
     args = parser.parse_args()
     
-    print("Opening videos...")
+    print("=" * 60)
+    print("PANORAMIC VIDEO STITCHING")
+    print("=" * 60)
+    print(f"Left video:  {args.left}")
+    print(f"Right video: {args.right}")
+    print(f"Output:      {args.output}")
+    print(f"Calibration: {args.calib}")
+    print("=" * 60)
+    
+    print("\nOpening videos...")
     cap_left = open_video(args.left)
     cap_right = open_video(args.right)
     
@@ -231,44 +247,102 @@ def main():
         print("Error: Could not read frames from videos")
         sys.exit(1)
     
-    print(f"Left frame: {frame_left.shape[1]}x{frame_left.shape[0]}")
+    print(f"Left frame:  {frame_left.shape[1]}x{frame_left.shape[0]}")
     print(f"Right frame: {frame_right.shape[1]}x{frame_right.shape[0]}")
     
     # Compute homography
+    print("\n" + "=" * 60)
     H = compute_homography(frame_left, frame_right)
+    print("=" * 60)
     
     # Calculate canvas size
+    print("\nCalculating panorama dimensions...")
     width, height, offset = calculate_canvas_size(
         frame_left.shape, frame_right.shape, H
     )
     
     # Save calibration
-    save_calibration(args.save_calib, H, offset, (width, height))
+    print("\nSaving calibration...")
+    save_calibration(args.calib, H, offset, (width, height))
     
     # Preview if requested
     if args.preview:
-        print("\nGenerating preview...")
+        print("\n" + "=" * 60)
+        print("GENERATING PREVIEW")
+        print("=" * 60)
         panorama = stitch_images(frame_left, frame_right, H, offset, (width, height))
         
         # Scale for display if too large
-        max_display_width = 1600
+        max_display_width = 1920
         if width > max_display_width:
             scale = max_display_width / width
             display_width = max_display_width
             display_height = int(height * scale)
             panorama_display = cv2.resize(panorama, (display_width, display_height))
+            print(f"Display scaled to: {display_width}x{display_height}")
         else:
             panorama_display = panorama
         
-        cv2.imshow("Panorama Preview", panorama_display)
+        cv2.imshow("Panorama Preview (Press any key to close)", panorama_display)
         print("Press any key to close preview...")
         cv2.waitKey(0)
         cv2.destroyAllWindows()
     
+    # Process full video if requested
+    if args.process_video:
+        print("\n" + "=" * 60)
+        print("PROCESSING FULL VIDEO")
+        print("=" * 60)
+        
+        # Reset video captures
+        cap_left.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        cap_right.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        
+        fps = int(cap_left.get(cv2.CAP_PROP_FPS))
+        total_frames = int(min(
+            cap_left.get(cv2.CAP_PROP_FRAME_COUNT),
+            cap_right.get(cv2.CAP_PROP_FRAME_COUNT)
+        ))
+        
+        print(f"Output: {width}x{height} @ {fps}fps")
+        print(f"Total frames: {total_frames}")
+        
+        # Create output directory
+        os.makedirs(os.path.dirname(args.output), exist_ok=True)
+        
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(args.output, fourcc, fps, (width, height))
+        
+        frame_count = 0
+        
+        while True:
+            left = read_frame(cap_left)
+            right = read_frame(cap_right)
+            
+            if left is None or right is None:
+                break
+            
+            # Stitch frames
+            panorama = stitch_images(left, right, H, offset, (width, height))
+            out.write(panorama)
+            
+            frame_count += 1
+            if frame_count % 30 == 0:
+                progress = (frame_count / total_frames) * 100
+                print(f"Progress: {frame_count}/{total_frames} ({progress:.1f}%)", end='\r')
+        
+        print(f"\nCompleted! Processed {frame_count} frames")
+        print(f"Saved to: {args.output}")
+        
+        out.release()
+    
     cap_left.release()
     cap_right.release()
     
-    print("\nCalibration complete!")
+    print("\n" + "=" * 60)
+    print("STITCHING COMPLETE!")
+    print("=" * 60)
 
 
 if __name__ == '__main__':

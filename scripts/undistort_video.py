@@ -1,15 +1,6 @@
-#!/usr/bin/env python3
-"""
-Undistort fisheye video using camera-specific calibration parameters.
-
-Usage:
-  python scripts/undistort_video.py --camera left --input video.mp4 --output undistorted.mp4
-  python scripts/undistort_video.py --camera right --input video.mp4 --output undistorted.mp4
-"""
-import argparse
 import numpy as np
 import cv2
-import sys
+import os
 
 # Calibration parameters for left camera
 LEFT_CAMERA = {
@@ -35,19 +26,13 @@ RIGHT_CAMERA = {
                    [-0.024336675312163564]])
 }
 
-
 def undistort_video(input_path, output_path, camera_params):
-    """Undistort a fisheye video using the provided camera parameters."""
-    DIM = camera_params['DIM']
-    K = camera_params['K']
-    D = camera_params['D']
-    
     # Open input video
     cap = cv2.VideoCapture(input_path)
     
     if not cap.isOpened():
         print(f"Error: Cannot open video {input_path}")
-        return
+        return False
     
     # Get video properties
     fps = int(cap.get(cv2.CAP_PROP_FPS))
@@ -55,29 +40,31 @@ def undistort_video(input_path, output_path, camera_params):
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
+    print(f"Processing {input_path}")
     print(f"Video: {width}x{height} @ {fps}fps, {total_frames} frames")
     
-    # Scale output dimensions to avoid cropping
-    scale_factor = 2
-    out_width = int(width * scale_factor)
-    out_height = int(height * scale_factor)
-    out_dim = (out_width, out_height)
+    # Use scaled K matrix to see all pixels (no zoom)
+    # This keeps the full field of view with black borders
+    K_scaled = camera_params['K'].copy()
+    K_scaled[0, 0] *= 0.6  # Scale focal length
+    K_scaled[1, 1] *= 0.6
     
-    print(f"Output will be scaled to: {out_width}x{out_height}")
-    
-    # Scale the camera matrix to match new output dimensions
-    scaled_K = K.copy()
-    scaled_K[0, 2] = out_width / 2   # cx - center x
-    scaled_K[1, 2] = out_height / 2  # cy - center y
-    
-    # Precompute undistortion maps (much faster than computing per frame)
+    # Precompute undistortion maps
     map1, map2 = cv2.fisheye.initUndistortRectifyMap(
-        K, D, np.eye(3), scaled_K, out_dim, cv2.CV_16SC2
+        camera_params['K'], 
+        camera_params['D'], 
+        np.eye(3), 
+        K_scaled,  # Use scaled K for output
+        camera_params['DIM'], 
+        cv2.CV_16SC2
     )
     
+    # Create output directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
     # Create video writer
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # or 'XVID', 'H264'
-    out = cv2.VideoWriter(output_path, fourcc, fps, out_dim)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
     
     frame_count = 0
     
@@ -106,33 +93,31 @@ def undistort_video(input_path, output_path, camera_params):
     # Release resources
     cap.release()
     out.release()
-    print(f"Saved undistorted video to: {output_path}")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description='Undistort fisheye video using camera-specific calibration'
-    )
-    parser.add_argument('--camera', '-c', 
-                        choices=['left', 'right'], 
-                        required=True,
-                        help='Which camera calibration to use (left or right)')
-    parser.add_argument('--input', '-i', 
-                        required=True,
-                        help='Input video file path')
-    parser.add_argument('--output', '-o', 
-                        required=True,
-                        help='Output video file path')
-    
-    args = parser.parse_args()
-    
-    # Select camera parameters
-    camera_params = LEFT_CAMERA if args.camera == 'left' else RIGHT_CAMERA
-    print(f"Using {args.camera} camera calibration")
-    
-    # Undistort the video
-    undistort_video(args.input, args.output, camera_params)
-
+    print(f"Saved to: {output_path}\n")
+    return True
 
 if __name__ == '__main__':
-    main()
+    # Input and output paths
+    left_input = "data/raw/leftflip.mp4"
+    right_input = "data/raw/rightflip.mp4"
+    left_output = "data/undistorted/left.mp4"
+    right_output = "data/undistorted/right.mp4"
+    
+    # Process left camera
+    print("=" * 50)
+    print("Processing LEFT camera")
+    print("=" * 50)
+    success_left = undistort_video(left_input, left_output, LEFT_CAMERA)
+    
+    # Process right camera
+    print("=" * 50)
+    print("Processing RIGHT camera")
+    print("=" * 50)
+    success_right = undistort_video(right_input, right_output, RIGHT_CAMERA)
+    
+    # Summary
+    print("=" * 50)
+    if success_left and success_right:
+        print("Both videos undistorted successfully!")
+    else:
+        print("Some videos failed to process.")

@@ -16,11 +16,11 @@ load_dotenv(Path(__file__).parent.parent.parent / '.env')
 # ---------------- ARGUMENTS ---------------- #
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--video", type=str, default=None,
+parser.add_argument("--video", type=str, default="output/stitched/panorama.mp4",
                     help="Path to input panoramic video (overrides .env)")
-parser.add_argument("--save-preview", type=str, default=None,
+parser.add_argument("--save-preview", type=str, default="output/broadcast/broadcast_preview.mp4",
                     help="Save the panorama preview video to this file")
-parser.add_argument("--save-broadcast", type=str, default=None,
+parser.add_argument("--save-broadcast", type=str, default="output/broadcast/broadcast_view.mp4",
                     help="Save the broadcast view video to this file")
 args = parser.parse_args()
 
@@ -36,10 +36,10 @@ else:
 
 print(f"Using video: {VIDEO_PATH}")
 PREVIEW_WIDTH = 1600
-EXCLUSION_RATIO = 0.13    # top 13%
-BOTTOM_EXCLUSION_RATIO = 0.15   # bottom 15%
-LEFT_EXCLUSION_RATIO = 0.05     # left band (0 = off)
-RIGHT_EXCLUSION_RATIO = 0.00    # right band (0 = off)
+EXCLUSION_RATIO = 0.06    # top 13%
+BOTTOM_EXCLUSION_RATIO = 0.01   # bottom 15%
+LEFT_EXCLUSION_RATIO = 0.01     # left band (0 = off)
+RIGHT_EXCLUSION_RATIO = 0.3    # right band (0 = off)
 
 MAX_MISSED_FRAMES = 20  # Increased to handle fast ball kicks better
 
@@ -50,8 +50,8 @@ PLAYER_MAX_ASPECT = 5.0
 PLAYER_NEAR_DIST = 600
 
 BROADCAST_ASPECT = 16.0 / 9.0
-MIN_VIEW_WIDTH = 1400  # Increased for wider view
-MAX_VIEW_WIDTH = 3200  # Increased max width
+MIN_VIEW_WIDTH = 100  # Increased for wider view
+MAX_VIEW_WIDTH = 890  # Increased max width
 MARGIN_FACTOR = 0.75  # Increased margins to show more context
 MARGIN_PIXELS = 120  # More pixel margin
 
@@ -528,7 +528,7 @@ def main():
         # --- Ball detection ---
         cand = detect_red_candidates(
             frame,
-            draw_exclusions=True,      # set to False to hide boxes
+            draw_exclusions=False,      # set to False to hide boxes
             debug_frame=disp,
         )
         ball = pick_best_candidate(cand, last_pos)
@@ -718,11 +718,43 @@ def main():
             prev_speed = speed
 
         # clamp + int conversion
-        x1, y1, x2, y2 = map(int, map(round, view_rect))
+        # --- Clamp while preserving 16:9 aspect ---
+        x1, y1, x2, y2 = view_rect
+        vw = x2 - x1
+        vh = y2 - y1
+
+        # Enforce exact broadcast aspect on the rect
+        desired_h = vw / BROADCAST_ASPECT
+        desired_w = vw
+
+        # If that height does not fit, recompute from height
+        if desired_h > h:
+            desired_h = h
+            desired_w = desired_h * BROADCAST_ASPECT
+
+        half_w = desired_w / 2.0
+        half_h = desired_h / 2.0
+
+        # Current centre of the view
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+
+        # Clamp centre so that the full rect stays inside the frame
+        cx = max(half_w, min(w - half_w, cx))
+        cy = max(half_h, min(h - half_h, cy))
+
+        # Rebuild rect from clamped centre and fixed size
+        x1 = int(round(cx - half_w))
+        x2 = int(round(cx + half_w))
+        y1 = int(round(cy - half_h))
+        y2 = int(round(cy + half_h))
+
+        # Final safety clamp to avoid off-by-one issues
         x1 = max(0, min(x1, w - 1))
-        y1 = max(0, min(y1, h - 1))
         x2 = max(x1 + 1, min(x2, w))
+        y1 = max(0, min(y1, h - 1))
         y2 = max(y1 + 1, min(y2, h))
+
 
         # --- Crops ---
         broadcast_crop = frame[y1:y2, x1:x2]
