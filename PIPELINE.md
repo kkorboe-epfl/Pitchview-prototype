@@ -9,18 +9,20 @@ This document explains how each step of the automated sports broadcast pipeline 
 **Implementation**: `scripts/undistort_video.py`
 
 **Method**:
-- Uses OpenCV's `cv2.fisheye.undistortImage()` with pre-calibrated camera matrices
-- Calibration parameters stored in `data/calibration/custom_calibration.json`
+- Uses OpenCV's `cv2.fisheye.initUndistortRectifyMap()` with camera-specific calibration
+- Calibration parameters hardcoded for LEFT_CAMERA and RIGHT_CAMERA
 - Contains camera intrinsics (focal length, principal point) and distortion coefficients
-- Processes both left and right camera feeds frame-by-frame
+- Precomputes undistortion maps for performance (much faster than per-frame)
+- Processes both cameras with 2× scale factor (2560×1440 → 5120×2880)
 
 **Input**: Raw dual-camera videos with fisheye distortion  
-**Output**: Geometrically corrected videos in `data/undistorted/`
+**Output**: Geometrically corrected videos at 5120×2880 resolution in `data/undistorted/`
 
 **Technical Details**:
 - Camera matrix K defines intrinsic parameters
 - Distortion coefficients model radial and tangential distortion
-- Balance parameter controls field-of-view vs. black borders trade-off
+- Scale factor doubles output resolution to preserve detail
+- Scaled K matrix centers output correctly
 
 ---
 
@@ -46,8 +48,8 @@ This document explains how each step of the automated sports broadcast pipeline 
 2. At edges: Gradual alpha transition using linear interpolation
 3. Formula: `alpha = (x - seam_left) / feather_width`
 
-**Input**: Two undistorted videos  
-**Output**: Single panoramic video (typically 3800×500) in `output/stitched/`
+**Input**: Two undistorted videos (5120×2880 each)
+**Output**: Single panoramic video in `output/stitched/panorama.mp4`
 
 ---
 
@@ -88,21 +90,29 @@ This document explains how each step of the automated sports broadcast pipeline 
 ### 4.1 Object Detection & Tracking
 
 **Player Detection**: YOLOv8 + ByteTrack
-- Model: `yolov8s.pt` (small, balanced speed/accuracy)
+- Model: `models/yolov8s.pt` (small, balanced speed/accuracy)
 - Detects class 0 (person) with confidence threshold 0.3
 - ByteTrack maintains persistent player IDs across frames
 - Prevents ID switches during occlusions
 
-**Ball Detection**: Dual-method approach
-1. **Primary: HSV Color Detection**
+**Ball Detection**: Dual-method approach (HSV PRIMARY, YOLO fallback)
+
+1. **Primary: HSV Color Detection** ⭐ Most Reliable
    - Red color ranges in HSV space: [0-10°, 165-180°]
    - Applies Gaussian blur and morphological operations
-   - Scores candidates by size, circularity, and proximity to last position
+   - Scores candidates by:
+     - Circularity (4πA/P²) - must be > 0.25
+     - Extent (area/circle_area) - must be > 0.35
+     - Size - strong preference for smaller balls (< 150px² area)
+     - Temporal coherence - heavily favors proximity to last position
    - Uses exclusion mask from field polygon
+   - Search radius: 600px around last known position
 
-2. **Secondary: YOLO Sports Ball**
+2. **Secondary: YOLO Sports Ball** (Unreliable)
    - Class 32 with threshold 0.2
-   - Less reliable but provides fallback
+   - Often fails to detect ball or produces false positives
+   - Sanity check: ball width/height must be < 100px
+   - HSV detection is strongly preferred
 
 ### 4.2 Ball Position Filtering
 
@@ -151,17 +161,46 @@ acceleration = spring_force - damping_force
 ### 4.5 Output Generation
 
 **Broadcast View** (1280×720):
+- Saved as `game.mp4` (or `--save-broadcast` argument)
 - Crops panorama based on camera position
 - Resizes to HD resolution
 - Maintains 16:9 aspect ratio
 
 **Preview Video** (optional):
+- Saved as `preview.mp4` (or `--save-preview` argument)
 - Full panorama with overlays
-- Green box: Camera view rectangle
-- Cyan circle: Raw ball detection
-- Blue circle: Kalman-filtered position
-- Red boxes: Player tracking boxes with IDs
-- Magenta line: Ball velocity vector
+- Magenta rectangle: Camera view window
+- Cyan circle + "YOLO"/"HSV" text: Raw ball detection with source
+- Yellow circle: Kalman-filtered ball position
+- Yellow arrow: Ball velocity vector
+- Green boxes: Player bounding boxes with track IDs
+
+---
+
+## Pipeline Automation
+
+`scripts/run_full_pipeline.py`
+
+**Usage**:
+```bash
+python scripts/run_full_pipeline.py \
+  --left-raw data/raw/leftflip.mp4 \
+  --right-raw data/raw/rightflip.mp4 \
+  --output-dir output/pipeline
+```
+
+**Steps**:
+1. Copies raw videos to `data/raw/`
+2. Runs `undistort_video.py` (processes both cameras)
+3. Runs `apply_manual_stitch.py` with seam parameters
+4. Runs `setup_ball_tracking.py` (interactive, unless `--skip-tracking-setup`)
+5. Runs `broadcast.py` to generate final output
+6. Saves screenshots at multiple frames for debugging
+
+**Optional Parameters**:
+- `--seam-top`, `--seam-bottom`, `--feather`: Stitching parameters
+- `--skip-tracking-setup`: Use existing ball tracking config
+- `--screenshot-frames`: Frame numbers for screenshots (default: [100, 300, 500, 700, 900])
 
 ---
 
