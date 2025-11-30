@@ -1,20 +1,25 @@
 # PitchView Prototype
 
-Affordable automated sports broadcast system using dual Pi HQ cameras. Stitches two camera feeds into a panoramic view, then uses computer vision to generate professional broadcast footage with automated camera tracking.
+Affordable automated sports broadcast system using dual Pi HQ cameras. Stitches two camera feeds into a panoramic view, then uses advanced computer vision with ByteTrack multi-object tracking, Kalman filtering, and physics-based camera motion to generate professional broadcast footage.
 
 **Hardware**: Single Raspberry Pi with two Pi HQ camera modules, providing wide-angle coverage at a fraction of traditional broadcast camera costs.
 
 ## Features
 
-- Panoramic stitching from dual-camera feeds with
-  - Black border artifact cleanup
+- **Panoramic Stitching** from dual-camera feeds with:
   - Smooth edge blending at seam
   - Auto-crop for clean output
-  - Exposure compensation for color matching
-- Ball tracking with HSV color detection
-- Player detection with YOLOv8
-- Automated broadcast camera with velocity-based smoothing
-- 720p HD output
+  - Feathering for seamless dow
+
+- **Advanced Broadcast System** with:
+  - ByteTrack multi-object tracking for persistent player IDs
+  - HSV-based ball detection with exclusion zones
+  - Kalman filter for ball prediction (handles temporary occlusions)
+  - Spring-damper physics-based camera motion (ultra-smooth)
+  - Pure pixel-space calculations (no homography required)
+  - Field boundary configuration to filter false detections
+
+- **Output**: 720p HD broadcast view with professional camera movement
 
 ## Quick Start
 
@@ -33,14 +38,20 @@ pip install -r requirements.txt
 python3 scripts/run_full_pipeline.py \
   --left-raw data/raw/leftflip.mp4 \
   --right-raw data/raw/rightflip.mp4 \
-  --calib data/calibration/custom_calibration.json \
   --output-dir output/pipeline
+
+# Or use the live demo pipeline (uses live_demo_scripts)
+python3 scripts/live_demo_scripts/run_live_demo_pipeline.py \
+  --left-raw data/raw/leftflip.mp4 \
+  --right-raw data/raw/rightflip.mp4 \
+  --output-dir output/live_demo
 ```
 
 This will automatically:
 - Undistort both camera videos
 - Stitch them into a panorama
-- Generate broadcast view with player/ball tracking
+- Set up ball tracking configuration (interactive)
+- Generate broadcast view with advanced tracking
 - Save screenshots at each step for debugging
 
 All outputs will be in `output/pipeline/` with screenshots in `output/pipeline/screenshots/`.
@@ -57,26 +68,28 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 3. Download sample videos
-cd data && ./download_videos.sh && cd ..
+cd data
+./download_videos.sh
+cd ..
 
 # 4. Undistort fisheye videos
-python3 scripts/undistort_video.py --camera left --input data/raw/leftflip.mp4 --output data/undistorted/left.mp4
-python3 scripts/undistort_video.py --camera right --input data/raw/rightflip.mp4 --output data/undistorted/right.mp4
+python3 scripts/undistort_video.py 
 
 # 5. Stitch dual-camera videos into panorama
-python3 scripts/stitching/stitch_apply_transform.py \
-  --left data/undistorted/left.mp4 \
-  --right data/undistorted/right.mp4 \
-  --calib data/calibration/custom_calibration.json \
-  --output output/stitched/panorama.mp4 \
-  --seam-x 3900 \
-  --sync-offset -1 \
-  --preview
+python3 scripts/stitching/apply_manual_stitch.py --seam-top 2030 --seam-bottom 2125 --feather 15  
 
-# 6. Generate broadcast view with tracking
-python3 scripts/detection/broadcast_yolo.py \
+# 6. Configure ball tracking (one-time setup)
+# This opens an interactive window to:
+#   - Draw a polygon around the playing field (click multiple points, press 'c' to close)
+#   - Click on the ball's initial position
+#   - Press 'q' to save and exit
+python3 scripts/detection/setup_ball_tracking.py output/stitched/panorama.mp4
+
+# 7. Generate broadcast view with advanced tracking
+python3 scripts/detection/broadcast.py \
   --video output/stitched/panorama.mp4 \
-  --save-broadcast output/broadcast/game.mp4
+  --save-broadcast output/broadcast/game.mp4 \
+  --save-preview output/broadcast/preview.mp4
 ```
 
 ### Windows (PowerShell)
@@ -87,7 +100,7 @@ python3 scripts/detection/broadcast_yolo.py \
 
 # If you get an execution policy error, run this first:
 # Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-#  data\.venv\Scripts\Activate.ps1
+# data\.venv\Scripts\Activate.ps1
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -100,27 +113,46 @@ cd ..
 # 4. Undistort fisheye videos
 python scripts/undistort_video.py 
 
-#if you want to manually adjust the stitching parameters, run:
-# python .\scripts\stitching\manual_stitch.py --stretch 0.4 
-
 # 5. Stitch dual-camera videos into panorama
 python scripts/stitching/apply_manual_stitch.py --seam-top 2030 --seam-bottom 2125 --feather 15  
 
-# 6. Generate broadcast view with tracking
-python scripts/detection/broadcast_yolo.py `
+# 6. Configure ball tracking (one-time setup)
+# This opens an interactive window to:
+#   - Draw a polygon around the playing field (click multiple points, press 'c' to close)
+#   - Click on the ball's initial position
+#   - Press 'q' to save and exit
+python scripts/detection/setup_ball_tracking.py output/stitched/panorama.mp4
+
+# 7. Generate broadcast view with advanced tracking
+python scripts/detection/broadcast.py `
   --video output/stitched/panorama.mp4 `
-  --save-broadcast output/broadcast/game.mp4
+  --save-broadcast output/broadcast/game.mp4 `
+  --save-preview output/broadcast/preview.mp4
 ```
+
+
 pitchview-prototype/
 ├── data/
-│   ├── raw/              # Input videos (download with download_videos.sh)
+│   ├── raw/              # Input videos (download sample videos with download_videos.sh)
 │   └── calibration/      # Camera calibration files
+├── models/               # YOLO model files (yolov8n.pt, yolov8s.pt)
 ├── output/
 │   ├── stitched/         # Panoramic videos (auto-created)
 │   └── broadcast/        # Broadcast views (auto-created)
 ├── scripts/
+│   ├── detection/        # Ball/player tracking and broadcast
+│   │   ├── broadcast.py
+│   │   └── setup_ball_tracking.py
 │   ├── stitching/        # Panorama creation
-│   └── detection/        # Ball/player tracking and broadcast
+│   │   ├── apply_manual_stitch.py
+│   │   └── manual_stitch.py
+│   ├── live_demo_scripts/# Live demo pipeline scripts
+│   │   ├── run_live_demo_pipeline.py
+│   │   ├── undistort.py
+│   │   ├── stitch_export_transform.py
+│   │   └── stitch_apply_transform.py
+│   ├── run_full_pipeline.py
+│   └── undistort_video.py
 └── requirements.txt      # Python dependencies
 ```
 
@@ -128,71 +160,64 @@ pitchview-prototype/
 
 ### Step 1: Panoramic Stitching
 
-Uses pre-computed calibration to stitch left and right camera feeds:
+Stitches left and right camera feeds using manual seam adjustment:
 
 ```bash
-python3 scripts/stitching/stitch_apply_transform.py \
-  --left data/undistorted/left.mp4 \
-  --right data/undistorted/right.mp4 \
-  --calib data/calibration/custom_calibration.json \
-  --output output/stitched/panorama.mp4 \
-  --seam-x 3900 \
-  --sync-offset -1
+python3 scripts/stitching/apply_manual_stitch.py \
+  --seam-top 2030 \
+  --seam-bottom 2125 \
+  --feather 15
 ```
 
-**Note:** Auto-crop and color matching are always enabled for optimal output quality.
+**Note:** Uses default input/output paths from `undistort_video.py` output.
 
 **Options:**
-- `--sync-offset N` - Sync videos by offsetting frames (positive if right is behind, negative if left is behind, default: 4)
-- `--edge-blend N` - Blend width in pixels (default: 50)
-- `--crop-threshold N` - Brightness threshold for detecting black borders (default: 30)
-- `--crop-content-ratio N` - Ratio of non-black pixels needed for content detection (default: 0.5)
-- `--preview` - Show live preview window
+- `--seam-top N` - Top y-coordinate of vertical seam (default: 2030)
+- `--seam-bottom N` - Bottom y-coordinate of vertical seam (default: 2125)
+- `--feather N` - Feathering width in pixels for blending (default: 15)
 
-### Step 2: Broadcast Generation
+### Step 2: Ball Tracking Configuration (One-time)
 
-Tracks ball and players to generate automated broadcast view:
+Configure the field boundary and initial ball position to improve tracking accuracy:
 
 ```bash
-python3 scripts/detection/broadcast_yolo.py \
+python3 scripts/detection/setup_ball_tracking.py output/stitched/panorama.mp4
+```
+
+**Interactive Steps:**
+1. **Draw Field Boundary**: Click around the playing field to create a polygon (8 points recommended)
+   - Press 'c' to close the polygon
+   - This excludes corner flags, markers, and out-of-bounds areas
+2. **Mark Ball Position**: Click on the ball's initial position
+3. **Save**: Press 'q' to save configuration
+
+This creates `data/calibration/ball_tracking_config.json` containing:
+- Field boundary polygon (for exclusion masking)
+- Initial ball position
+
+**Note:** Only needs to be run once per field setup. Configuration is reused for all videos from the same field.
+
+### Step 3: Broadcast Generation
+
+Generate professional broadcast view with advanced tracking:
+
+```bash
+python3 scripts/detection/broadcast.py \
   --video output/stitched/panorama.mp4 \
   --save-broadcast output/broadcast/game.mp4 \
   --save-preview output/broadcast/preview.mp4
 ```
 
+**Features:**
+- **ByteTrack**: Persistent player tracking with unique IDs
+- **Kalman Filter**: Predicts ball position during occlusions (up to 60 frames)
+- **Spring-Damper Camera**: Ultra-smooth physics-based motion (no jarring movements)
+- **Smart Framing**: Includes nearby players (within 400px) in the frame
+- **Exclusion Zones**: Ignores false detections outside the configured field boundary
+
 **Options:**
-- `--save-broadcast` - Save broadcast view (720p, tracking window)
-- `--save-preview` - Save panorama with overlay annotations
-
-## Calibration (One-time Setup)
-
-### Fisheye Undistortion
-
-Undistort fisheye camera footage before stitching:
-
-```bash
-# For left camera
-python3 scripts/undistort_video.py --camera left --input raw_left.mp4 --output ata/undistorted/left.mp4
-
-# For right camera
-python3 scripts/undistort_video.py --camera right --input raw_right.mp4 --output data/undistorted/right.mp4
-```
-
-**Note:** Update calibration parameters in `scripts/undistort_video.py` for your specific cameras.
-
-### Rig Calibration
-
-If using different cameras or changing camera positions, create new stitching calibration:
-
-```bash
-python3 scripts/stitching/stitch_export_transform.py \
-  --left data/undistorted/left.mp4 \
-  --right data/undistorted/right.mp4 \
-  --save-calib data/calibration/custom_calibration.json \
-  --preview
-```
-
-Then use `--calib data/calibration/custom_calibration.json` in the stitching step.
+- `--save-broadcast` - Save 1280x720 broadcast view
+- `--save-preview` - Save full panorama with tracking visualizations (ball predictions, player boxes, camera view rectangle)
 
 ## Sample Data
 

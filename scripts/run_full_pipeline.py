@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Full pipeline: Undistort -> Stitch -> Broadcast
+Full pipeline: Undistort -> Stitch -> Setup Tracking -> Broadcast
 Saves screenshots at each step for debugging and visualization.
 
 Usage:
   python scripts/run_full_pipeline.py \
     --left-raw data/raw/leftflip.mp4 \
     --right-raw data/raw/rightflip.mp4 \
-    --calib data/calibration/custom_calibration.json \
     --output-dir output/pipeline
 """
 import argparse
@@ -58,10 +57,12 @@ def main():
     )
     parser.add_argument('--left-raw', required=True, help='Left raw video path')
     parser.add_argument('--right-raw', required=True, help='Right raw video path')
-    parser.add_argument('--calib', required=True, help='Stitching calibration JSON')
     parser.add_argument('--output-dir', default='output/pipeline', help='Output directory')
-    parser.add_argument('--seam-x', type=int, default=3900, help='Seam position for stitching')
-    parser.add_argument('--sync-offset', type=int, default=-1, help='Frame sync offset')
+    parser.add_argument('--seam-top', type=int, default=2030, help='Top y-coordinate of vertical seam')
+    parser.add_argument('--seam-bottom', type=int, default=2125, help='Bottom y-coordinate of vertical seam')
+    parser.add_argument('--feather', type=int, default=15, help='Feathering width in pixels for blending')
+    parser.add_argument('--skip-tracking-setup', action='store_true',
+                       help='Skip interactive ball tracking setup (use existing config)')
     parser.add_argument('--screenshot-frames', type=int, nargs='+', default=[100, 300, 500, 700, 900],
                        help='Frame numbers for screenshots (multiple frames for broadcast/preview)')
     
@@ -95,8 +96,8 @@ def main():
     print(f"{'='*60}")
     print(f"Left raw: {args.left_raw}")
     print(f"Right raw: {args.right_raw}")
-    print(f"Calibration: {args.calib}")
     print(f"Output directory: {output_dir}")
+    print(f"Stitch params: seam-top={args.seam_top}, seam-bottom={args.seam_bottom}, feather={args.feather}")
     
     # Step 0: Save original raw screenshots
     print(f"\n{'='*60}")
@@ -107,54 +108,83 @@ def main():
     save_screenshot(args.left_raw, screenshots_dir / "01_raw_left.jpg", first_frame)
     save_screenshot(args.right_raw, screenshots_dir / "02_raw_right.jpg", first_frame)
     
-    # Step 1: Undistort left camera
-    run_command(
-        [
-            'python3', 'scripts/undistort_video.py',
-            '--camera', 'left',
-            '--input', args.left_raw,
-            '--output', str(left_undistorted)
-        ],
-        "Undistort left camera"
-    )
-    save_screenshot(str(left_undistorted), screenshots_dir / "03_undistorted_left.jpg", first_frame)
+    # Step 1: Copy raw videos to data/raw for undistort script
+    import shutil
+    raw_dir = Path('data/raw')
+    raw_dir.mkdir(parents=True, exist_ok=True)
     
-    # Step 2: Undistort right camera
+    print(f"\n{'='*60}")
+    print("STEP 1: Preparing raw videos")
+    print(f"{'='*60}")
+    shutil.copy2(args.left_raw, raw_dir / 'leftflip.mp4')
+    shutil.copy2(args.right_raw, raw_dir / 'rightflip.mp4')
+    print(f"Copied videos to data/raw/")
+    
+    # Step 2: Undistort both cameras (script handles both)
     run_command(
-        [
-            'python3', 'scripts/undistort_video.py',
-            '--camera', 'right',
-            '--input', args.right_raw,
-            '--output', str(right_undistorted)
-        ],
-        "Undistort right camera"
+        ['python3', 'scripts/undistort_video.py'],
+        "Undistort both cameras"
     )
-    save_screenshot(str(right_undistorted), screenshots_dir / "04_undistorted_right.jpg", first_frame)
+    
+    # Copy undistorted videos to pipeline output directory
+    default_left = Path('data/undistorted/left.mp4')
+    default_right = Path('data/undistorted/right.mp4')
+    if default_left.exists():
+        shutil.copy2(default_left, left_undistorted)
+        save_screenshot(str(left_undistorted), screenshots_dir / "03_undistorted_left.jpg", first_frame)
+    if default_right.exists():
+        shutil.copy2(default_right, right_undistorted)
+        save_screenshot(str(right_undistorted), screenshots_dir / "04_undistorted_right.jpg", first_frame)
     
     # Step 3: Stitch panorama
     run_command(
         [
-            'python3', 'scripts/stitching/stitch_apply_transform.py',
-            '--left', str(left_undistorted),
-            '--right', str(right_undistorted),
-            '--calib', args.calib,
-            '--output', str(stitched_video),
-            '--seam-x', str(args.seam_x),
-            '--sync-offset', str(args.sync_offset)
+            'python3', 'scripts/stitching/apply_manual_stitch.py',
+            '--seam-top', str(args.seam_top),
+            '--seam-bottom', str(args.seam_bottom),
+            '--feather', str(args.feather)
         ],
         "Stitch panorama"
     )
-    save_screenshot(str(stitched_video), screenshots_dir / "05_stitched_panorama.jpg", first_frame)
     
-    # Step 4: Generate broadcast view
+    # Copy stitched video to pipeline output directory
+    default_stitched = Path('output/stitched/panorama.mp4')
+    if default_stitched.exists():
+        shutil.copy2(default_stitched, stitched_video)
+        save_screenshot(str(stitched_video), screenshots_dir / "05_stitched_panorama.jpg", first_frame)
+    
+    # Step 4: Setup ball tracking configuration (if not skipping)
+    if not args.skip_tracking_setup:
+        print(f"\n{'='*60}")
+        print("STEP 4: Ball Tracking Configuration")
+        print(f"{'='*60}")
+        print("Interactive setup will open:")
+        print("  1. Draw polygon around the playing field (click points, press 'c' to close)")
+        print("  2. Click on the ball's initial position")
+        print("  3. Press 'q' to save and continue")
+        print()
+        
+        run_command(
+            [
+                'python3', 'scripts/detection/setup_ball_tracking.py',
+                str(stitched_video)
+            ],
+            "Configure ball tracking (field boundary + initial ball position)"
+        )
+    else:
+        print(f"\n{'='*60}")
+        print("STEP 4: Skipping ball tracking setup (using existing config)")
+        print(f"{'='*60}")
+    
+    # Step 5: Generate broadcast view with advanced tracking
     run_command(
         [
-            'python3', 'scripts/detection/broadcast_yolo.py',
+            'python3', 'scripts/detection/broadcast.py',
             '--video', str(stitched_video),
             '--save-broadcast', str(broadcast_video),
             '--save-preview', str(preview_video)
         ],
-        "Generate broadcast view with tracking"
+        "Generate broadcast view with advanced tracking"
     )
     
     # Save multiple screenshots for broadcast and preview to show tracking quality
@@ -172,6 +202,7 @@ def main():
     print(f"\nOutputs:")
     print(f"  Undistorted videos: {undistorted_dir}")
     print(f"  Stitched panorama: {stitched_video}")
+    print(f"  Ball tracking config: data/calibration/ball_tracking_config.json")
     print(f"  Broadcast view: {broadcast_video}")
     print(f"  Broadcast preview: {preview_video}")
     print(f"  Screenshots: {screenshots_dir}")

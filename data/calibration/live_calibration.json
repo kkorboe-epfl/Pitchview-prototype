@@ -1,0 +1,30 @@
+{
+  "H": [
+    [
+      1.0,
+      0.0,
+      2770.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "offset": [
+    0,
+    0
+  ],
+  "pano_size": [
+    7890,
+    2880
+  ],
+  "used_affine": false,
+  "manual_alignment": true,
+  "description": "Manual alignment: right frame offset by (2770, 0)"
+}
