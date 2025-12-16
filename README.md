@@ -13,6 +13,35 @@ Affordable automated sports broadcast system using dual Pi HQ cameras. Stitches 
 
 For detailed technical implementation, see [PIPELINE.md](PIPELINE.md).
 
+## Pipeline Visualization
+
+### Step 1: Raw Dual-Camera Input
+<p align="center">
+  <img src="output/pipeline/screenshots/01_raw_left.jpg" width="49%" />
+  <img src="output/pipeline/screenshots/02_raw_right.jpg" width="49%" />
+</p>
+
+### Step 2: Fisheye Undistortion
+<p align="center">
+  <img src="output/pipeline/screenshots/03_undistorted_left.jpg" width="49%" />
+  <img src="output/pipeline/screenshots/04_undistorted_right.jpg" width="49%" />
+</p>
+
+### Step 3: Panoramic Stitching
+![Stitched Panorama](output/pipeline/screenshots/05_stitched_panorama.jpg)
+
+### Step 4: Broadcast Generation with Ball Tracking
+
+**Preview with Detection Overlays:**
+![Broadcast Preview](output/pipeline/screenshots/06_broadcast_preview_4_frame700.jpg)
+*Shows YOLO player detection (green boxes), ball tracking (yellow circle), and camera framing (magenta box)*
+
+**Final Broadcast Output:**
+![Broadcast Output](output/pipeline/screenshots/07_broadcast_output_4_frame700.jpg)
+*720p HD broadcast view with automated camera following*
+
+---
+
 ## Prerequisites (One-Time Setup)
 
 Before running the automated pipeline, you need to complete these one-time calibration steps:
