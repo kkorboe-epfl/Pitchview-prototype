@@ -38,3 +38,6 @@ data/cars/backup_m2ts/
 
 # Others
 *.swp
+
+# Undistorted videos
+data/undistorted/

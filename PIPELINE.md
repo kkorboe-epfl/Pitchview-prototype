@@ -1,83 +1,61 @@
 # Broadcast Pipeline Implementation
 
-This document explains how each step of the automated sports broadcast pipeline is implemented.
+Technical implementation details for each step of the automated sports broadcast pipeline.
 
 ## Step 1: Fisheye Undistortion
 
-**Purpose**: Remove barrel distortion from Pi HQ camera fisheye lenses to create geometrically correct images.
+**Purpose**: Remove barrel distortion from Pi HQ fisheye lenses for geometrically correct images.
 
 **Implementation**: `scripts/undistort_video.py`
 
-**Method**:
-- Uses OpenCV's `cv2.fisheye.initUndistortRectifyMap()` with camera-specific calibration
-- Calibration parameters hardcoded for LEFT_CAMERA and RIGHT_CAMERA
-- Contains camera intrinsics (focal length, principal point) and distortion coefficients
-- Precomputes undistortion maps for performance (much faster than per-frame)
-- Processes both cameras with 2× scale factor (2560×1440 → 5120×2880)
+**Method**: Uses OpenCV's `cv2.fisheye.initUndistortRectifyMap()` with precomputed undistortion maps for performance. Camera calibration (intrinsics K and distortion coefficients D) loaded from `data/calibration/camera_calibration.json`. Processes both cameras at 2× scale factor (2560×1440 → 5120×2880) to preserve detail.
 
 **Input**: Raw dual-camera videos with fisheye distortion  
-**Output**: Geometrically corrected videos at 5120×2880 resolution in `data/undistorted/`
-
-**Technical Details**:
-- Camera matrix K defines intrinsic parameters
-- Distortion coefficients model radial and tangential distortion
-- Scale factor doubles output resolution to preserve detail
-- Scaled K matrix centers output correctly
+**Output**: Geometrically corrected videos at 5120×2880 in `data/undistorted/`
 
 ---
 
 ## Step 2: Panoramic Stitching
 
-**Purpose**: Combine left and right camera views into a single wide panoramic view.
+**Purpose**: Combine left and right camera views into single wide panoramic view.
 
-**Implementation**: `scripts/stitching/apply_manual_stitch.py`
+**Implementation**: `scripts/stitching/manual/apply_manual_stitch.py` (recommended)
 
-**Method**:
-- Concatenates left and right frames horizontally
-- Applies vertical seam blending at the overlap region
-- Uses feathering (weighted blending) to create smooth transition
-- Crops black borders for clean output
+### Manual Stitching (Recommended)
 
-**Key Parameters**:
-- `--seam-top`: Y-coordinate where blending starts (default: 2030)
-- `--seam-bottom`: Y-coordinate where blending ends (default: 2125)
-- `--feather`: Blending width in pixels (default: 15)
+**Why Manual?** For this dual-camera sports broadcast setup, manual stitching significantly outperforms automated:
+- Fixed parallel rig only needs affine transformation (6 params: rotation, scale, translation) vs homography (8 params)
+- Repetitive grass textures confuse feature matchers (SIFT fails on uniform patterns)
+- Precise seam control, faster processing, more reliable
 
-**Blending Algorithm**:
-1. At seam center: 50% left frame, 50% right frame
-2. At edges: Gradual alpha transition using linear interpolation
-3. Formula: `alpha = (x - seam_left) / feather_width`
+**Method**: Affine transformation with calibrated parameters + vertical seam feathering (weighted blending) + horizontal stretch correction for fisheye residuals.
 
-**Input**: Two undistorted videos (5120×2880 each)
-**Output**: Single panoramic video in `output/stitched/panorama.mp4`
+**Key Parameters**: `--seam-top` (2030), `--seam-bottom` (2125), `--feather` (15px)  
+**Blending**: Linear alpha transition from 100% left → 50/50 → 100% right across feather width
+
+### Automated Stitching (Alternative)
+
+**When to use**: Non-parallel cameras, moving rigs, high-texture scenes (buildings/crowds)  
+**Method**: SIFT + CLAHE → FLANN matching + Lowe's ratio test → RANSAC homography + LAB exposure matching  
+**Limitations**: Struggles with grass, slower, less seam control
+
+**Input**: Two undistorted videos (5120×2880)  
+**Output**: Panorama in `output/stitched/panorama.mp4`
 
 ---
 
 ## Step 3: Ball Tracking Configuration
 
-**Purpose**: Define field boundaries and initial ball position to improve tracking accuracy.
+**Purpose**: Define field boundaries and initial ball position for improved tracking accuracy.
 
 **Implementation**: `scripts/detection/setup_ball_tracking.py`
 
-**Method**: Interactive OpenCV window with mouse callbacks
+**Interactive Setup**:
+1. Draw field polygon (click points, press 'c' to close) → creates exclusion mask
+2. Click ball position → seeds search algorithm
+3. Press 'q' to save
 
-**User Actions**:
-1. **Draw field polygon**: Click to add points, press 'c' to close
-2. **Mark ball position**: Single click on the ball
-3. **Save**: Press 'q' to write configuration
-
-**Output**: `data/calibration/ball_tracking_config.json`
-```json
-{
-  "field_polygon": [[x1,y1], [x2,y2], ...],
-  "ball_position": [x, y],
-  "frame_dimensions": [width, height]
-}
-```
-
-**Purpose of Data**:
-- Field polygon creates exclusion mask (ignores corner flags, out-of-bounds markers)
-- Initial ball position seeds the search algorithm for first detection
+**Output**: `data/calibration/ball_tracking_config.json` containing field polygon, ball position, frame dimensions
 
 ---
 
@@ -89,148 +67,77 @@ This document explains how each step of the automated sports broadcast pipeline 
 
 ### 4.1 Object Detection & Tracking
 
-**Player Detection**: YOLOv8 + ByteTrack
-- Model: `models/yolov8s.pt` (small, balanced speed/accuracy)
-- Detects class 0 (person) with confidence threshold 0.3
-- ByteTrack maintains persistent player IDs across frames
-- Prevents ID switches during occlusions
+**Detection**: YOLOv8s runs continuously on every frame, detecting both players (class 0, threshold 0.3) and balls (class 32, threshold 0.2). ByteTrack maintains persistent player IDs across occlusions.
 
-**Ball Detection**: Dual-method approach (HSV PRIMARY, YOLO fallback)
+**Ball Tracking**: Combination of HSV color detection and YOLO sports ball detection. HSV is primary, YOLO serves as fallback.
 
-1. **Primary: HSV Color Detection** ⭐ Most Reliable
-   - Red color ranges in HSV space: [0-10°, 165-180°]
-   - Applies Gaussian blur and morphological operations
-   - Scores candidates by:
-     - Circularity (4πA/P²) - must be > 0.25
-     - Extent (area/circle_area) - must be > 0.35
-     - Size - strong preference for smaller balls (< 150px² area)
-     - Temporal coherence - heavily favors proximity to last position
-   - Uses exclusion mask from field polygon
-   - Search radius: 600px around last known position
+> **Note**: HSV provides reliable tracking for red balls in consistent lighting. YOLO (generic COCO weights) produces false positives but serves as fallback when HSV fails. Fine-tuned YOLO would be superior (lighting-invariant, handles all ball types, better with occlusions).
 
-2. **Secondary: YOLO Sports Ball** (Unreliable)
-   - Class 32 with threshold 0.2
-   - Often fails to detect ball or produces false positives
-   - Sanity check: ball width/height must be < 100px
-   - HSV detection is strongly preferred
+**Detection Strategy**:
+1. **HSV Color Detection** (primary)
+   - Red ranges [0-10°, 165-180°] with Gaussian blur + morphology
+   - Scores by circularity (>0.25), extent (>0.35), size (<150px²), temporal coherence
+   - 600px search radius with field exclusion mask
+2. **YOLO Sports Ball** (fallback when HSV fails)
+   - Class 32, threshold 0.2, size check <100px
+   - Field exclusion zone filtering to reduce false positives
+   - Temporal coherence check: only used if within 300px of last position (prevents false positive jumps)
+   - Only activated when HSV returns no detection
+3. **Kalman Prediction** (when both methods fail)
+   - Continues for up to 60 frames using velocity prediction
+   - Bounds checking to prevent divergence
+
+**Limitations**: HSV is lighting-sensitive and color-specific. YOLO generic weights produce false positives.
+
+**Future work**: Fine-tune YOLO on sport-specific annotated footage to make it the primary method
 
 ### 4.2 Ball Position Filtering
 
-**Kalman Filter** (filterpy library)
-- **State vector**: [x, y, vx, vy] in pixel coordinates
-- **State transition**: Constant velocity model with dt=1 frame
-- **Measurement noise** (R): 15.0 (trusts detections)
-- **Process noise** (Q): [2.5, 2.5, 18, 18] (higher for velocity to track acceleration)
+**Kalman Filter** (filterpy): State [x, y, vx, vy], constant velocity model, measurement noise R=15.0, process noise Q=[2.5, 2.5, 18, 18]. Continues predictions up to 60 frames during occlusions with bounds checking.
 
-**Prediction Continuation**:
-- Continues tracking up to 60 frames without detection
-- Uses Kalman predictions during occlusions
-- Bounds checking prevents divergence (clips to frame + 200px margin)
-- Resets filter after extended loss
-
-### 4.3 Camera Framing Logic
+### 4.3 Camera Framing
 
 **Target Computation** (pixel-space only):
-1. Find players within 400px of ball
-2. Compute center of mass of [ball + nearby players]
-3. Calculate bounding box spread
-4. Adjust for ball velocity (zoom out when speed > 30px/frame)
-5. Clamp view width: 600-2000 pixels
-
-**Smart Framing**:
-- No homography needed (pure pixel calculations)
-- View margin: 1.3× the spread of targets
-- Aspect ratio: 16:9 maintained throughout
+- Find players within 400px of ball
+- Center of mass of [ball + nearby players]
+- Adjust for velocity (zoom out when speed >30px/frame)
+- View width clamped 600-2000px, 1.3× spread margin, 16:9 aspect ratio
 
 ### 4.4 Camera Motion
 
-**Spring-Damper Physics System**
+**Spring-Damper Physics**:
 ```python
-spring_force = k_spring × (target - current)
-damping_force = k_damper × velocity
-acceleration = spring_force - damping_force
+force = k_spring(0.04) × (target - current) - k_damper(0.8) × velocity
 ```
+Gentle pull, heavy damping, ultra-slow zoom (0.008) → smooth, natural movement
 
-**Parameters**:
-- Spring constant: 0.04 (gentle pull toward target)
-- Damper constant: 0.8 (heavy resistance to motion)
-- Zoom smoothing: 0.008 (ultra-slow transitions)
+### 4.5 Output
 
-**Result**: Smooth, natural camera movement without jarring transitions
-
-### 4.5 Output Generation
-
-**Broadcast View** (1280×720):
-- Saved as `game.mp4` (or `--save-broadcast` argument)
-- Crops panorama based on camera position
-- Resizes to HD resolution
-- Maintains 16:9 aspect ratio
-
-**Preview Video** (optional):
-- Saved as `preview.mp4` (or `--save-preview` argument)
-- Full panorama with overlays
-- Magenta rectangle: Camera view window
-- Cyan circle + "YOLO"/"HSV" text: Raw ball detection with source
-- Yellow circle: Kalman-filtered ball position
-- Yellow arrow: Ball velocity vector
-- Green boxes: Player bounding boxes with track IDs
+**Broadcast** (1280×720): Cropped panorama at camera position, HD resolution, 16:9 aspect  
+**Preview** (optional): Full panorama with overlays (magenta=camera view, cyan=raw detection, yellow=Kalman filtered, green=players+IDs)
 
 ---
 
 ## Pipeline Automation
 
-`scripts/run_full_pipeline.py`
+**Script**: `scripts/run_full_pipeline.py`
 
-**Usage**:
-```bash
-python scripts/run_full_pipeline.py \
-  --left-raw data/raw/leftflip.mp4 \
-  --right-raw data/raw/rightflip.mp4 \
-  --output-dir output/pipeline
-```
+**Steps**: Undistort → Stitch (manual) → Ball tracking setup (interactive) → Broadcast generation → Screenshots
 
-**Steps**:
-1. Copies raw videos to `data/raw/`
-2. Runs `undistort_video.py` (processes both cameras)
-3. Runs `apply_manual_stitch.py` with seam parameters
-4. Runs `setup_ball_tracking.py` (interactive, unless `--skip-tracking-setup`)
-5. Runs `broadcast.py` to generate final output
-6. Saves screenshots at multiple frames for debugging
-
-**Optional Parameters**:
-- `--seam-top`, `--seam-bottom`, `--feather`: Stitching parameters
-- `--skip-tracking-setup`: Use existing ball tracking config
-- `--screenshot-frames`: Frame numbers for screenshots (default: [100, 300, 500, 700, 900])
+**Key Options**: `--seam-top/bottom/feather`, `--skip-tracking-setup`, `--screenshot-frames`
 
 ---
 
 ## Technical Stack
 
-**Computer Vision**: OpenCV 4.x
-**Deep Learning**: Ultralytics YOLOv8 with PyTorch
-**Tracking**: ByteTrack (built into YOLOv8)
-**Filtering**: FilterPy (Kalman filter implementation)
-**Hardware Acceleration**: MPS (Apple Silicon) / CUDA (NVIDIA) / CPU fallback
+**CV**: OpenCV 4.x  
+**DL**: Ultralytics YOLOv8 (PyTorch)  
+**Tracking**: ByteTrack  
+**Filtering**: FilterPy (Kalman)  
+**GPU Acceleration**: YOLOv8 runs on MPS (Apple Silicon) / CUDA (NVIDIA) / CPU fallback
 
 ---
 
-## AI Usage in This Project
+## AI Usage
 
-This section documents where and how AI technologies were employed in the development of this broadcast system.
-
-### Pre-trained AI Models
-
-**YOLOv8 (You Only Look Once v8)**
-- **Purpose**: Real-time object detection for players and ball
-- **Source**: Ultralytics pre-trained model (yolov8s.pt)
-- **Training**: Trained on COCO dataset (Common Objects in Context)
-- **Usage**: 
-  - Detects persons (class 0) for player tracking
-  - Detects sports balls (class 32) as secondary ball detection method
-- **No custom training performed** - uses off-the-shelf weights
-
-**ByteTrack**
-- **Purpose**: Multi-object tracking algorithm for persistent player IDs
-- **Source**: Integrated into Ultralytics YOLOv8 framework
-- **Usage**: Maintains player identity across frames during occlusions
-- **Implementation**: Algorithm-based, not a trainable neural network
+**YOLOv8s**: Pre-trained on COCO dataset, detects persons (class 0) and sports balls (class 32), no custom training

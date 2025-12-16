@@ -153,11 +153,11 @@ class SpringDamperCamera:
 
 # ---------------- DETECTION & TRACKING ---------------- #
 
-def detect_objects_with_tracking(model, frame):
+def detect_objects_with_tracking(model, frame, exclusion_mask=None):
     """
     Detect and track players and ball using YOLO with ByteTrack.
     Returns: (players_dict, ball_detection)
-    Note: Ball detection from YOLO is often unreliable, use HSV as primary.
+    Note: Ball detection from YOLO is fallback only - HSV is primary.
     """
     # Run YOLO with tracking
     results = model.track(frame, persist=True, conf=YOLO_CONF_THRESH, 
@@ -189,8 +189,15 @@ def detect_objects_with_tracking(model, frame):
                 'conf': conf
             }
         
-        # Ball detection from YOLO - but it's unreliable, will use HSV instead
+        # Ball detection from YOLO (fallback only, with exclusion zone filtering)
         elif cls_id == SPORTS_BALL_CLASS_ID and conf > BALL_CONF_THRESH:
+            # Apply exclusion mask - skip if ball is outside playing field
+            if exclusion_mask is not None:
+                if cy >= exclusion_mask.shape[0] or cx >= exclusion_mask.shape[1]:
+                    continue
+                if exclusion_mask[cy, cx] > 0:  # Excluded area
+                    continue
+            
             # Sanity check - ball should be reasonably small
             ball_w = x2 - x1
             ball_h = y2 - y1
@@ -491,10 +498,30 @@ def main():
             break
         
         # Detect and track objects
-        players, ball_detection_yolo = detect_objects_with_tracking(model, frame)
+        players, ball_detection_yolo = detect_objects_with_tracking(model, frame, exclusion_mask)
         
-        # Always use HSV as primary ball detection (more reliable for red ball)
-        ball_detection = detect_ball_hsv(frame, last_ball_pos, exclusion_mask)
+        # Use HSV as primary ball detection (more reliable for red ball)
+        ball_detection_hsv = detect_ball_hsv(frame, last_ball_pos, exclusion_mask)
+        
+        # Combine detections for robust tracking:
+        # - HSV is primary (accurate for red balls in good lighting)
+        # - YOLO is fallback with temporal coherence check (reduces false positives)
+        ball_detection = None
+        
+        if ball_detection_hsv is not None:
+            # HSV found the ball - use it
+            ball_detection = ball_detection_hsv
+        elif ball_detection_yolo is not None:
+            # HSV failed, check YOLO fallback
+            if last_ball_pos is not None:
+                # Only use YOLO if within reasonable distance from last position (temporal coherence)
+                yolo_pos = ball_detection_yolo['center_px']
+                dist = np.sqrt((yolo_pos[0] - last_ball_pos[0])**2 + (yolo_pos[1] - last_ball_pos[1])**2)
+                if dist < 300:  # Ball shouldn't jump more than 300px between frames
+                    ball_detection = ball_detection_yolo
+            else:
+                # No prior position - accept YOLO for initial detection
+                ball_detection = ball_detection_yolo
         
         # Update last ball position for next frame
         if ball_detection is not None:

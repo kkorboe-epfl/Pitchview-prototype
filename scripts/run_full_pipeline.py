@@ -116,9 +116,19 @@ def main():
     print(f"\n{'='*60}")
     print("STEP 1: Preparing raw videos")
     print(f"{'='*60}")
-    shutil.copy2(args.left_raw, raw_dir / 'leftflip.mp4')
-    shutil.copy2(args.right_raw, raw_dir / 'rightflip.mp4')
-    print(f"Copied videos to data/raw/")
+    
+    # Only copy if source and destination are different
+    left_src = Path(args.left_raw).resolve()
+    left_dst = (raw_dir / 'leftflip.mp4').resolve()
+    if left_src != left_dst:
+        shutil.copy2(args.left_raw, raw_dir / 'leftflip.mp4')
+    
+    right_src = Path(args.right_raw).resolve()
+    right_dst = (raw_dir / 'rightflip.mp4').resolve()
+    if right_src != right_dst:
+        shutil.copy2(args.right_raw, raw_dir / 'rightflip.mp4')
+    
+    print(f"Raw videos ready in data/raw/")
     
     # Step 2: Undistort both cameras (script handles both)
     run_command(
@@ -139,7 +149,7 @@ def main():
     # Step 3: Stitch panorama
     run_command(
         [
-            'python3', 'scripts/stitching/apply_manual_stitch.py',
+            'python3', 'scripts/stitching/manual/apply_manual_stitch.py',
             '--seam-top', str(args.seam_top),
             '--seam-bottom', str(args.seam_bottom),
             '--feather', str(args.feather)
